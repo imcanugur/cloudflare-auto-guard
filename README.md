@@ -269,6 +269,5 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ---
 
 <p align="center">
-  <i>Mastering the local network, one port at a time.</i><br>
   <i>Made with ☕ and passion in the dev cave.</i>
 </p>

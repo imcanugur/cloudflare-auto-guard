@@ -1,39 +1,28 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cloudflare-auto-guard",
+  "account_id": "9e4f77f6f235d123d97d393c69159743",
   "main": "index.ts",
-  "compatibility_date": "2024-12-30",
+  "compatibility_date": "2025-07-18",
   "compatibility_flags": [
     "nodejs_compat"
   ],
   "kv_namespaces": [
     {
       "binding": "POLICY_KV",
-      "id": "POLICY_KV_ID_REPLACE_ME",
-      "preview_id": "POLICY_KV_PREVIEW_ID_REPLACE_ME"
-    }
-  ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "TRAFFIC_SHARD",
-        "class_name": "TrafficShardDO"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_classes": [
-        "TrafficShardDO"
-      ]
+      "id": "YOUR_POLICY_KV_ID",
+      "preview_id": "YOUR_POLICY_KV_ID"
     }
   ],
   "vars": {
-    "GUARD_SHARD_COUNT": "8",
-    "CF_LIST_NAME": "AUTO_GUARD_BLOCK",
+    "CF_LIST_NAME": "auto_guard_block",
     "POLICY_CACHE_TTL_MS": "30000",
     "DRY_RUN": "false"
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
   },
   "observability": {
     "enabled": true

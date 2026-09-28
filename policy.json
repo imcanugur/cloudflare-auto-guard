@@ -1,0 +1,34 @@
+{
+  "enabled": true,
+  "windowSeconds": 3600,
+  "topN": 100,
+  "default": {
+    "enabled": true,
+    "threshold": 100,
+    "action": "block"
+  },
+  "allowlist": [
+    "1.1.1.1",
+    "8.8.8.8"
+  ],
+  "countries": {
+    "TR": {
+      "enabled": false
+    },
+    "US": {
+      "enabled": true,
+      "threshold": 5,
+      "action": "block"
+    },
+    "DE": {
+      "enabled": true,
+      "threshold": 500,
+      "action": "block"
+    },
+    "NL": {
+      "enabled": true,
+      "threshold": 300,
+      "action": "block"
+    }
+  }
+}

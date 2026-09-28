@@ -1,6 +1,7 @@
-# Cloudflare API Credentials for Lists Mutation
+# Cloudflare API Credentials for Lists Mutation and GraphQL Analytics
 CF_API_TOKEN=your_cloudflare_api_token_here
 CF_ACCOUNT_ID=your_cloudflare_account_id_here
+CF_ZONE_ID=your_cloudflare_zone_id_here
 CF_LIST_ID=your_cloudflare_list_id_here
 
 # Runtime switches
