@@ -6,3 +6,6 @@ CF_LIST_ID=your_cloudflare_list_id_here
 
 # Runtime switches
 DRY_RUN=false
+
+# Optional Admin Security Token (Protects /__guard/* management routes from public access)
+GUARD_ADMIN_TOKEN=your_super_secret_admin_token_here

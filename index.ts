@@ -23,6 +23,7 @@ export interface Env {
   CF_LIST_NAME?: string;
   POLICY_CACHE_TTL_MS?: string;
   DRY_RUN?: string;
+  GUARD_ADMIN_TOKEN?: string;
 }
 
 // Module-level in-memory cache
@@ -62,6 +63,27 @@ export default {
    */
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // 0. Security Guard: Protect all /__guard/* endpoints with GUARD_ADMIN_TOKEN
+    if (url.pathname.startsWith("/__guard") && url.pathname !== "/__guard/health") {
+      const adminToken = env.GUARD_ADMIN_TOKEN;
+      if (adminToken) {
+        const providedToken = request.headers.get("X-Guard-Token") || url.searchParams.get("token");
+        if (providedToken !== adminToken) {
+          return new Response(
+            JSON.stringify(
+              {
+                error: "UNAUTHORIZED",
+                message: "Access Denied: Missing or invalid X-Guard-Token."
+              },
+              null,
+              2
+            ),
+            { status: 401, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      }
+    }
 
     // 1. Healthcheck endpoint
     if (url.pathname === "/health" || url.pathname === "/__guard/health") {
