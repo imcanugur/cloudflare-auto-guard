@@ -1,22 +1,13 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cloudflare-auto-guard",
-  "account_id": "9e4f77f6f235d123d97d393c69159743",
   "main": "index.ts",
   "compatibility_date": "2025-07-18",
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "kv_namespaces": [
-    {
-      "binding": "POLICY_KV",
-      "id": "YOUR_POLICY_KV_ID",
-      "preview_id": "YOUR_POLICY_KV_ID"
-    }
-  ],
   "vars": {
     "CF_LIST_NAME": "auto_guard_block",
-    "POLICY_CACHE_TTL_MS": "30000",
     "DRY_RUN": "false"
   },
   "triggers": {

@@ -1,21 +1,20 @@
 # Cloudflare Worker — Production-Grade Country-Based Auto Guard
 
-A production-grade, zero-external-backend automated IP threat detection and mitigation system built entirely on Cloudflare edge primitives (**Cloudflare Workers**, **Sharded Durable Objects**, **Cloudflare KV**, **Lists API**, and **Cloudflare WAF**).
+A production-grade, zero-external-backend automated IP threat detection and mitigation system built entirely on Cloudflare edge primitives (**Cloudflare Workers**, **GraphQL Analytics**, **Lists API**, and **Cloudflare WAF**).
 
 ---
 
 ## 🚀 Overview
 
-High-frequency malicious traffic and DDoS probes often display distinct geographic patterns. **Auto Guard** continuously monitors inbound traffic, calculates sliding time-window metrics across IP addresses, and applies dynamic country-specific security policies stored in Cloudflare KV. 
+High-frequency malicious traffic and DDoS probes often display distinct geographic patterns. **Auto Guard** continuously monitors inbound traffic from Cloudflare GraphQL Zone Analytics and applies country-specific security policies defined in [`policy.json`](./policy.json). 
 
 When an IP crosses a configured request threshold within the sliding window and ranks within the Top-N candidate set, Auto Guard automatically registers the offending IP into a Cloudflare IP List for immediate WAF-level mitigation.
 
 ### Key Highlights
 * **Zero External Dependencies**: No Redis, PostgreSQL, Node.js VPS, Docker containers, or third-party servers required. Everything runs natively within Cloudflare.
-* **Sharded Durable Objects**: Distributed state storage partitioned by IP hash to prevent serialization bottlenecks and scale horizontally.
-* **Distributed Top-N Aggregation**: Shards compute local Top-N candidates and stream only high-volume candidates to the global merge stage. Raw traffic records never choke a central node.
-* **Runtime Dynamic Policies**: Policies are stored in Cloudflare KV (`guard:policy`). Thresholds, country rules, and time windows can be updated instantaneously **without redeploying Worker code**.
-* **Failure Isolation**: If the Cloudflare Lists API or DO storage experiences an anomaly, legitimate user traffic is never interrupted or blocked.
+* **Edge GraphQL Analytics**: Queries live edge traffic directly via Cloudflare Analytics API (`httpRequestsAdaptiveGroups`).
+* **GitOps Policy Management**: Rules and thresholds are managed cleanly in [`policy.json`](./policy.json). Push changes to GitHub and they deploy automatically.
+* **Failure Isolation**: If the Cloudflare Lists API experiences an anomaly, legitimate user traffic is never interrupted or blocked.
 * **Dry-Run Mode**: Full audit trail of block decisions (`WOULD_BLOCK`) without calling the mutation API for safe staging validation.
 * **Idempotency & Deduplication**: Prevents duplicate Cloudflare API calls for IPs already present in the block list.
 
@@ -68,9 +67,9 @@ When an IP crosses a configured request threshold within the sliding window and 
 
 ## ⚙️ Configuration & Policy Schema
 
-Policies are stored as JSON in Cloudflare KV under the key `guard:policy` in the `POLICY_KV` namespace.
+Policies are defined directly in [`policy.json`](./policy.json) (GitOps). Any change pushed to GitHub is automatically compiled and applied on deployment without requiring Cloudflare KV.
 
-### KV Policy Example
+### Policy Configuration Example
 
 ```json
 {
