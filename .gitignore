@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Cloudflare Wrangler
+.wrangler/
+.dev.vars
+
+# Build output
+dist/
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

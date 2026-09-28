@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudflare-auto-guard",
+  "main": "index.ts",
+  "compatibility_date": "2024-12-30",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "POLICY_KV",
+      "id": "POLICY_KV_ID_REPLACE_ME",
+      "preview_id": "POLICY_KV_PREVIEW_ID_REPLACE_ME"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TRAFFIC_SHARD",
+        "class_name": "TrafficShardDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "TrafficShardDO"
+      ]
+    }
+  ],
+  "vars": {
+    "GUARD_SHARD_COUNT": "8",
+    "CF_LIST_NAME": "AUTO_GUARD_BLOCK",
+    "POLICY_CACHE_TTL_MS": "30000",
+    "DRY_RUN": "false"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

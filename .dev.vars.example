@@ -1,0 +1,7 @@
+# Cloudflare API Credentials for Lists Mutation
+CF_API_TOKEN=your_cloudflare_api_token_here
+CF_ACCOUNT_ID=your_cloudflare_account_id_here
+CF_LIST_ID=your_cloudflare_list_id_here
+
+# Runtime switches
+DRY_RUN=false
