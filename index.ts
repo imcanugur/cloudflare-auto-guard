@@ -2,9 +2,13 @@
  * Cloudflare Worker — Production-Grade Country-Based Auto Guard
  *
  * Automatically inspects Cloudflare GraphQL Zone Analytics, identifies high-frequency
- * malicious IPs based on runtime country policies in KV, and mitigates them via Cloudflare Lists API & WAF.
+ * malicious IPs based on country policies, and mitigates them via Cloudflare Lists API & WAF.
+ *
+ * Pure Headless JSON API — All administration is performed via terminal cURL.
  */
 import { DEFAULT_GUARD_POLICY } from "@/config/defaults";
+import { GuardPolicy } from "@/domain/models/policy";
+import { safeValidatePolicy } from "@/config/policy-schema";
 import { DecisionEngine } from "@/guard/decision-engine";
 import { Blocker } from "@/guard/blocker";
 import { AllowlistMatcher } from "@/security/allowlist";
@@ -15,6 +19,7 @@ import { logger } from "@/observability/logger";
 import { metrics } from "@/observability/metrics";
 
 export interface Env {
+  POLICY_KV?: KVNamespace;
   CF_ZONE_ID?: string;
   CF_ACCOUNT_ID?: string;
   CF_API_TOKEN?: string;
@@ -24,7 +29,27 @@ export interface Env {
   GUARD_ADMIN_TOKEN?: string;
 }
 
-const allowlistMatcher = new AllowlistMatcher();
+// Runtime in-memory policy state & allowlist
+let runtimePolicy: GuardPolicy = DEFAULT_GUARD_POLICY;
+const allowlistMatcher = new AllowlistMatcher(DEFAULT_GUARD_POLICY.allowlist || []);
+
+async function getActivePolicy(env: Env): Promise<GuardPolicy> {
+  if (env.POLICY_KV) {
+    try {
+      const raw = await env.POLICY_KV.get("guard:policy", "text");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const val = safeValidatePolicy(parsed);
+        if (val.success) {
+          return val.data as GuardPolicy;
+        }
+      }
+    } catch {
+      // Fallback to runtime memory policy
+    }
+  }
+  return runtimePolicy;
+}
 
 function createServices(env: Env) {
   const apiToken = env.CF_API_TOKEN || "";
@@ -55,17 +80,15 @@ function createServices(env: Env) {
 
 export default {
   /**
-   * Main request handler: Exposes health, metrics, and on-demand evaluation endpoints
+   * Main request handler: Pure JSON API for cURL administration
    */
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // 0. Security Guard: Protect admin/management routes
-    const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    const isAdminRoute = url.pathname.startsWith("/__guard") || url.pathname === "/policy" || url.pathname === "/evaluate";
+    // 0. Security Guard: Protect admin/mutation routes with GUARD_ADMIN_TOKEN
     const isPublicHealth = url.pathname === "/health" || url.pathname === "/__guard/health";
 
-    if (isAdminRoute && !isPublicHealth) {
+    if (!isPublicHealth) {
       const adminToken = env.GUARD_ADMIN_TOKEN;
       if (adminToken) {
         const providedToken = request.headers.get("X-Guard-Token") || url.searchParams.get("token");
@@ -82,24 +105,12 @@ export default {
             { status: 401, headers: { "Content-Type": "application/json" } }
           );
         }
-      } else if (!isLocal && request.method === "POST") {
-        return new Response(
-          JSON.stringify(
-            {
-              error: "GUARD_ADMIN_TOKEN_REQUIRED",
-              message: "Security Protection: In production, GUARD_ADMIN_TOKEN secret must be configured to authorize policy updates."
-            },
-            null,
-            2
-          ),
-          { status: 403, headers: { "Content-Type": "application/json" } }
-        );
       }
     }
 
     // 1. Healthcheck endpoint
     if (url.pathname === "/health" || url.pathname === "/__guard/health") {
-      return new Response(JSON.stringify({ status: "healthy", timestamp: Date.now() }), {
+      return new Response(JSON.stringify({ status: "healthy", timestamp: Date.now() }, null, 2), {
         headers: { "Content-Type": "application/json" }
       });
     }
@@ -112,17 +123,70 @@ export default {
     }
 
     const { decisionEngine } = createServices(env);
+    const activePolicy = await getActivePolicy(env);
 
-    // 3. Load static policy directly from policy.json
-    const policy = DEFAULT_GUARD_POLICY;
-
-    if (policy.allowlist && policy.allowlist.length > 0) {
-      allowlistMatcher.update(policy.allowlist);
+    if (activePolicy.allowlist && activePolicy.allowlist.length > 0) {
+      allowlistMatcher.update(activePolicy.allowlist);
     }
 
-    // 3.5. View policy endpoint (returns active policy.json)
+    // 3. Policy View & Upload / Mutation API endpoint (cURL)
     if (url.pathname === "/__guard/policy" || url.pathname === "/policy") {
-      return new Response(JSON.stringify(policy, null, 2), {
+      if (request.method === "POST" || request.method === "PUT") {
+        try {
+          const body = await request.json();
+          const validation = safeValidatePolicy(body);
+
+          if (!validation.success) {
+            return new Response(
+              JSON.stringify(
+                {
+                  error: "INVALID_POLICY_SCHEMA",
+                  message: validation.error?.message,
+                  issues: validation.error?.issues
+                },
+                null,
+                2
+              ),
+              { status: 400, headers: { "Content-Type": "application/json" } }
+            );
+          }
+
+          const validatedPolicy = validation.data as GuardPolicy;
+
+          // Persist to KV if namespace is bound
+          if (env.POLICY_KV) {
+            await env.POLICY_KV.put("guard:policy", JSON.stringify(validatedPolicy, null, 2));
+          }
+
+          // Update runtime memory & allowlist
+          runtimePolicy = validatedPolicy;
+          if (runtimePolicy.allowlist) {
+            allowlistMatcher.update(runtimePolicy.allowlist);
+          }
+
+          return new Response(
+            JSON.stringify(
+              {
+                status: "success",
+                message: "Policy updated successfully via cURL!",
+                persistedToKv: Boolean(env.POLICY_KV),
+                policy: validatedPolicy
+              },
+              null,
+              2
+            ),
+            { headers: { "Content-Type": "application/json" } }
+          );
+        } catch (err) {
+          return new Response(
+            JSON.stringify({ error: "INVALID_JSON", message: (err as Error).message }, null, 2),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      }
+
+      // GET: Return active policy
+      return new Response(JSON.stringify(activePolicy, null, 2), {
         headers: { "Content-Type": "application/json" }
       });
     }
@@ -141,7 +205,7 @@ export default {
         );
       }
 
-      const decisions = await decisionEngine.evaluateCandidates(policy, zoneId);
+      const decisions = await decisionEngine.evaluateCandidates(activePolicy, zoneId);
       return new Response(
         JSON.stringify(
           {
@@ -159,17 +223,17 @@ export default {
       );
     }
 
-    // Default status dashboard response
+    // Default status dashboard response (JSON)
     return new Response(
       JSON.stringify(
         {
           status: "active",
-          guard: "Cloudflare Auto Guard (Analytics-Powered)",
+          guard: "Cloudflare Auto Guard (Headless Edge Engine)",
           zoneId: env.CF_ZONE_ID ? `${env.CF_ZONE_ID.slice(0, 6)}...` : "NOT_CONFIGURED",
-          endpoints: {
-            evaluate: "/__guard/evaluate",
-            metrics: "/__guard/metrics",
-            health: "/__guard/health"
+          curlExamples: {
+            viewPolicy: "curl https://your-worker/__guard/policy",
+            updatePolicy: "curl -X POST https://your-worker/__guard/policy -H 'Content-Type: application/json' -d @policy.json",
+            runEvaluate: "curl -X POST https://your-worker/__guard/evaluate"
           }
         },
         null,
@@ -194,14 +258,14 @@ export default {
     }
 
     const { decisionEngine } = createServices(env);
-    const policy = DEFAULT_GUARD_POLICY;
+    const activePolicy = await getActivePolicy(env);
 
-    if (policy.allowlist && policy.allowlist.length > 0) {
-      allowlistMatcher.update(policy.allowlist);
+    if (activePolicy.allowlist && activePolicy.allowlist.length > 0) {
+      allowlistMatcher.update(activePolicy.allowlist);
     }
 
     ctx.waitUntil(
-      decisionEngine.evaluateCandidates(policy, zoneId).catch((err) => {
+      decisionEngine.evaluateCandidates(activePolicy, zoneId).catch((err) => {
         logger.error("SCHEDULED_EVALUATION_FAILED", {
           message: (err as Error).message
         });

@@ -67,9 +67,9 @@ When an IP crosses a configured request threshold within the sliding window and 
 
 ## ⚙️ Configuration & Policy Schema
 
-Policies are defined directly in [`policy.json`](./policy.json) (GitOps). Any change pushed to GitHub is automatically compiled and applied on deployment without requiring Cloudflare KV.
+Policies are defined using [`policy.example.json`](./policy.example.json). You can create your own `policy.json` (gitignored) and upload it at runtime via terminal cURL.
 
-### Policy Configuration Example
+### Policy Configuration Template (`policy.example.json`)
 
 ```json
 {

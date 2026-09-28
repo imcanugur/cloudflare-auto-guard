@@ -4,7 +4,7 @@
   "topN": 100,
   "default": {
     "enabled": true,
-    "threshold": 100,
+    "threshold": 1000,
     "action": "block"
   },
   "allowlist": [
@@ -17,17 +17,17 @@
     },
     "US": {
       "enabled": true,
-      "threshold": 5,
+      "threshold": 2000,
       "action": "block"
     },
     "DE": {
       "enabled": true,
-      "threshold": 500,
+      "threshold": 1500,
       "action": "block"
     },
     "NL": {
       "enabled": true,
-      "threshold": 300,
+      "threshold": 1000,
       "action": "block"
     }
   }

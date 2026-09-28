@@ -4,12 +4,12 @@
  * Reads and validates policy.json at bundle time.
  */
 import { GuardPolicy } from "@/domain/models/policy";
-import localPolicy from "@/policy.json";
+import examplePolicy from "@/policy.example.json";
 import { safeValidatePolicy } from "@/config/policy-schema";
 
-const validation = safeValidatePolicy(localPolicy);
+const validation = safeValidatePolicy(examplePolicy);
 if (!validation.success) {
-  throw new Error(`Invalid policy.json configuration: ${validation.error?.message}`);
+  throw new Error(`Invalid policy.example.json configuration: ${validation.error?.message}`);
 }
 
 export const DEFAULT_GUARD_POLICY: GuardPolicy = validation.data as GuardPolicy;

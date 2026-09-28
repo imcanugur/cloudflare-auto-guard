@@ -1,9 +1,10 @@
 # Dependencies
 node_modules/
 
-# Cloudflare Wrangler
+# Cloudflare Wrangler & Secrets
 .wrangler/
 .dev.vars
+policy.json
 
 # Build output
 dist/
