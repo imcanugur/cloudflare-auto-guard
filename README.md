@@ -1,90 +1,82 @@
-# Cloudflare Worker — Production-Grade Country-Based Auto Guard
+# 🛡️ Cloudflare Auto Guard
 
-A production-grade, zero-external-backend automated IP threat detection and mitigation system built entirely on Cloudflare edge primitives (**Cloudflare Workers**, **GraphQL Analytics**, **Lists API**, and **Cloudflare WAF**).
+A production-grade, zero-external-backend automated IP threat detection and mitigation system built entirely on Cloudflare edge primitives (**Cloudflare Workers**, **GraphQL Zone Analytics**, **Rules Lists API**, **Cloudflare KV**, and **Cloudflare WAF**).
 
 ---
 
 ## 🚀 Overview
 
-High-frequency malicious traffic and DDoS probes often display distinct geographic patterns. **Auto Guard** continuously monitors inbound traffic from Cloudflare GraphQL Zone Analytics and applies country-specific security policies defined in [`policy.json`](./policy.json). 
-
-When an IP crosses a configured request threshold within the sliding window and ranks within the Top-N candidate set, Auto Guard automatically registers the offending IP into a Cloudflare IP List for immediate WAF-level mitigation.
+High-frequency malicious traffic, DDoS probes, and scrapers often display distinct geographic patterns. **Auto Guard** continuously monitors real edge traffic directly from **Cloudflare GraphQL Zone Analytics**, evaluates candidates against dynamic country-based policies, and automatically mitigates offending IPs via Cloudflare IP Lists and WAF rules.
 
 ### Key Highlights
-* **Zero External Dependencies**: No Redis, PostgreSQL, Node.js VPS, Docker containers, or third-party servers required. Everything runs natively within Cloudflare.
+* **Zero External Dependencies**: No Redis, PostgreSQL, Node.js VPS, Docker containers, or third-party servers required. Everything runs 100% natively on Cloudflare.
 * **Edge GraphQL Analytics**: Queries live edge traffic directly via Cloudflare Analytics API (`httpRequestsAdaptiveGroups`).
-* **GitOps Policy Management**: Rules and thresholds are managed cleanly in [`policy.json`](./policy.json). Push changes to GitHub and they deploy automatically.
-* **Failure Isolation**: If the Cloudflare Lists API experiences an anomaly, legitimate user traffic is never interrupted or blocked.
+* **High-Performance Bulk Batching**: Applies bans in a single bulk API call (up to 1,000 IPs per request), completely preventing subrequest limit errors.
+* **Automated Unban (TTL & 10k Limit Protection)**: Automatically expires and prunes old bans after a configurable TTL (e.g., 24 hours) and applies FIFO pruning when approaching Cloudflare's 10,000 list item limit.
+* **Runtime Dynamic Policies**: Policies are stored in Cloudflare KV (`POLICY_KV`). Rules, thresholds, and time windows can be updated instantaneously via cURL or Postman **without redeploying code**.
+* **Detailed Audit Trail**: Enriches banned IPs with metadata comments including Country, Request count, Rule threshold, Time window, Traffic rank, and UTC timestamp.
+* **Failure Isolation**: If the Cloudflare Lists API experiences an anomaly, legitimate user traffic is never interrupted.
 * **Dry-Run Mode**: Full audit trail of block decisions (`WOULD_BLOCK`) without calling the mutation API for safe staging validation.
-* **Idempotency & Deduplication**: Prevents duplicate Cloudflare API calls for IPs already present in the block list.
+* **100% Idempotent**: Prevents duplicate Cloudflare API calls by checking existing list items before evaluation.
 
 ---
 
 ## 🏛️ Architecture
 
 ```text
-                    INCOMING REQUEST
-                           │
-                           ▼
-                   CLOUDFLARE WORKER
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-      IP & Country Metadata         Policy KV
-              │                         │
-              ▼                         │
-      Traffic Collector                 │
-              │                         │
-              ▼                         │
-    Durable Object Shards               │
-      (sliding buckets)                 │
-              │                         │
-              ▼                         │
-     Distributed Top-N                  │
-              │                         │
-              └────────────┬────────────┘
-                           ▼
-                    Policy Resolver
-              (Country Override + Default)
-                           │
-                           ▼
-                    Decision Engine
-              (Deterministic Precedence)
-                           │
-                ┌──────────┴──────────┐
-                ▼                     ▼
-             IGNORE                 BLOCK
-                                      │
-                                      ▼
-                             Cloudflare Lists API
-                                      │
-                                      ▼
-                                Cloudflare WAF
-                             (ip.src in $LIST -> BLOCK)
+                     EDGE TRAFFIC
+                          │
+                          ▼
+            CLOUDFLARE ZONE ANALYTICS
+        (httpRequestsAdaptiveGroups GraphQL)
+                          │
+                          ▼
+            AUTO GUARD CRON / API WORKER
+                          │
+             ┌────────────┴────────────┐
+             ▼                         ▼
+      Active Policy KV           Existing WAF List
+       (guard:policy)         (syncExistingList / TTL Pruning)
+             │                         │
+             └────────────┬────────────┘
+                          ▼
+                   Decision Engine
+             (Candidate IP Evaluation)
+                          │
+               ┌──────────┴──────────┐
+               ▼                     ▼
+            IGNORE                 BLOCK
+                                     │
+                                     ▼
+                          Bulk Batch Mutations
+                          (Cloudflare Lists API)
+                                     │
+                                     ▼
+                               Cloudflare WAF
+                         (ip.src in $auto_guard_block)
 ```
 
 ---
 
 ## ⚙️ Configuration & Policy Schema
 
-Policies are defined using [`policy.example.json`](./policy.example.json). You can create your own `policy.json` (gitignored) and upload it at runtime via terminal cURL.
+Policies can be updated at runtime via `POST /__guard/policy` and are persisted in Cloudflare KV.
 
 ### Policy Configuration Template (`policy.example.json`)
 
 ```json
 {
   "enabled": true,
-  "windowSeconds": 300,
+  "windowSeconds": 3600,
   "topN": 100,
   "default": {
     "enabled": true,
-    "threshold": 10000,
+    "threshold": 1000,
     "action": "block"
   },
   "allowlist": [
     "1.1.1.1",
-    "8.8.8.8",
-    "192.168.0.0/16"
+    "8.8.8.8"
   ],
   "countries": {
     "TR": {
@@ -97,32 +89,119 @@ Policies are defined using [`policy.example.json`](./policy.example.json). You c
     },
     "DE": {
       "enabled": true,
-      "threshold": 5000,
+      "threshold": 1500,
       "action": "block"
     },
     "NL": {
       "enabled": true,
-      "threshold": 3000,
-      "action": "block"
-    },
-    "GB": {
-      "enabled": true,
-      "threshold": 4000,
+      "threshold": 1000,
       "action": "block"
     }
+  },
+  "unban": {
+    "enabled": true,
+    "ttlSeconds": 86400,
+    "maxListSize": 9000
   }
 }
 ```
 
 ### Policy Precedence Rules
 1. **Global Enablement**: If `enabled: false`, all guard evaluations return `IGNORE` (`GLOBAL_DISABLED`).
-2. **IP Validation**: Malformed or missing IP headers return `IGNORE` (`INVALID_IP`).
+2. **IP Validation**: Malformed or private IP headers return `IGNORE` (`INVALID_IP`).
 3. **Allowlist**: If the IP matches any allowlist IP or CIDR block, it is immediately permitted (`ALLOWLISTED`).
 4. **Country Override**: If the country policy is explicitly set to `enabled: false` (e.g., `TR`), it is ignored (`COUNTRY_DISABLED`).
 5. **Top-N Filter**: If an IP rank is outside the active Top-N window, it returns `IGNORE` (`OUTSIDE_TOP_N`).
 6. **Threshold Check**: If request volume in the sliding window is below the resolved country or default threshold, it returns `IGNORE` (`BELOW_THRESHOLD`).
-7. **Idempotency**: If the IP is already present in the block list cache, it returns `IGNORE` (`ALREADY_BLOCKED`).
-8. **Action**: If `dryRun: true`, the decision logs `WOULD_BLOCK` without mutating the Cloudflare List. Otherwise, the IP is added to the Cloudflare List.
+7. **Idempotency**: If the IP is already present in the block list, it returns `IGNORE` (`ALREADY_BLOCKED`).
+8. **Action**: If `dryRun: true`, the decision logs `WOULD_BLOCK` without mutating the Cloudflare List. Otherwise, the IP is added in bulk to the Cloudflare List.
+
+---
+
+## 🛠️ Step-by-Step Installation & Setup
+
+### 1. Clone & Install Dependencies
+```bash
+git clone https://github.com/imcanugur/cloudflare-auto-guard.git
+cd cloudflare-auto-guard
+npm install
+```
+
+### 2. Configure Cloudflare Secrets
+Set your credentials directly into Cloudflare's encrypted vault:
+
+```bash
+# Zone ID of the website you want to protect
+npx wrangler secret put CF_ZONE_ID
+
+# Your Cloudflare Account ID
+npx wrangler secret put CF_ACCOUNT_ID
+
+# Cloudflare API Token (Requires Zone:Analytics:Read, Zone:Zone:Read, Account:Lists:Edit)
+npx wrangler secret put CF_API_TOKEN
+
+# Cloudflare Rules List ID for 'auto_guard_block'
+npx wrangler secret put CF_LIST_ID
+
+# Optional: Admin Secret Token to protect /__guard/* routes
+npx wrangler secret put GUARD_ADMIN_TOKEN
+```
+
+### 3. Bind KV Namespace (in Cloudflare Dashboard)
+1. Go to **Cloudflare Dashboard** ➔ **Workers & Pages** ➔ `cloudflare-auto-guard` ➔ **Settings** ➔ **Bindings**.
+2. Click **Add binding** ➔ **KV Namespace**:
+   * **Variable name**: `POLICY_KV`
+   * **KV namespace**: Select your KV namespace (e.g., `AutoBanner`).
+3. Click **Deploy**.
+
+### 4. Create Cloudflare WAF Custom Rule
+In your Cloudflare Zone dashboard under **Security** ➔ **WAF** ➔ **Custom Rules**:
+* **Rule Name**: `Auto Guard WAF Block`
+* **Expression**:
+  ```text
+  ip.src in $auto_guard_block
+  ```
+* **Action**: `Block`
+
+### 5. Deploy Worker
+```bash
+npx wrangler deploy
+```
+
+---
+
+## 📡 API & cURL Administration Guide
+
+All management routes are pure headless JSON API. If `GUARD_ADMIN_TOKEN` is configured, pass `-H "X-Guard-Token: <token>"`.
+
+### 1. View Active Policy
+```bash
+curl https://cloudflare-auto-guard.<subdomain>.workers.dev/__guard/policy \
+  -H "X-Guard-Token: your_secret_token"
+```
+
+### 2. Update Policy in Real-Time (Persists to KV)
+```bash
+curl -X POST https://cloudflare-auto-guard.<subdomain>.workers.dev/__guard/policy \
+  -H "Content-Type: application/json" \
+  -H "X-Guard-Token: your_secret_token" \
+  -d @policy.json
+```
+
+### 3. Trigger Instant Threat Evaluation
+```bash
+curl -X POST https://cloudflare-auto-guard.<subdomain>.workers.dev/__guard/evaluate \
+  -H "X-Guard-Token: your_secret_token"
+```
+
+### 4. Health & Diagnostics
+```bash
+# Health Check
+curl https://cloudflare-auto-guard.<subdomain>.workers.dev/health
+
+# Environment Diagnostic Check
+curl https://cloudflare-auto-guard.<subdomain>.workers.dev/_debug
+```
 
 ---
 
@@ -131,10 +210,10 @@ Policies are defined using [`policy.example.json`](./policy.example.json). You c
 ```text
 cloudflare-auto-guard/
 │
-├── index.ts                     # Worker entry point and Durable Object definition
+├── index.ts                     # Worker entry point (Fetch, Cron Scheduled, & API routes)
 │
 ├── config/
-│   ├── config-loader.ts         # Loads KV policies and environment variables
+│   ├── config-loader.ts         # Runtime policy loader with fail-safe defaults
 │   ├── policy-schema.ts         # Zod schema validation for runtime policies
 │   └── defaults.ts              # Fallback fail-safe default policy
 │
@@ -143,108 +222,32 @@ cloudflare-auto-guard/
 │   └── policies/                # Country, Top-N, threshold, and global policies
 │
 ├── guard/
-│   ├── collector.ts             # Captures request metadata
-│   ├── aggregator.ts            # Sliding bucket aggregator
-│   ├── evaluator.ts             # Evaluates candidate IPs against policies
-│   ├── decision-engine.ts       # Deterministic decision pipeline
-│   └── blocker.ts               # Executes IP block mutations
-│
-├── storage/
-│   ├── durable-object.ts        # Sharded Durable Object traffic storage
-│   ├── traffic-repository.ts    # Storage adapter for metrics
-│   └── policy-cache.ts          # In-memory TTL cache for KV policies
+│   ├── evaluator.ts             # Deterministic candidate IP evaluator
+│   ├── decision-engine.ts       # Main coordination pipeline
+│   └── blocker.ts               # Bulk batch list execution & auto-unban pruning
 │
 ├── cloudflare/
-│   ├── client.ts                # Cloudflare API client with exponential backoff
-│   ├── lists.ts                 # Cloudflare Lists API operations
+│   ├── client.ts                # Resilient Cloudflare API client (REST & GraphQL)
+│   ├── analytics.ts             # Cloudflare GraphQL Zone Analytics service
+│   ├── lists.ts                 # Rules Lists bulk batch and delete operations
 │   └── types.ts                 # API response and request type definitions
 │
 ├── security/
 │   ├── ip-validator.ts          # IPv4 and IPv6 format validator
-│   ├── ip-normalizer.ts         # Normalized representation for comparisons
-│   └── allowlist.ts             # Exact IP and CIDR subnet matcher
+│   ├── ip-normalizer.ts         # Canonical IP representation
+│   └── allowlist.ts             # CIDR subnet and exact IP matcher
 │
 ├── observability/
 │   ├── logger.ts                # Structured JSON logging
-│   ├── metrics.ts               # Runtime metrics collector
-│   └── audit.ts                 # Block decision audit recorder
-│
-├── shared/
-│   ├── errors.ts                # Domain and infrastructure error definitions
-│   ├── retry.ts                 # Exponential backoff and retry helper
-│   └── utils.ts                 # Hashing and date-time utilities
-│
-├── test/
-│   ├── unit/                    # Unit tests for policy, validator, and engine
-│   ├── integration/             # Integration tests with mocked KV and Lists API
-│   └── fixtures/                # Mock policies and request payloads
+│   └── metrics.ts               # Runtime metrics collector
 │
 ├── wrangler.jsonc               # Cloudflare Workers configuration
+├── policy.example.json          # Open-source policy template
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts
 ├── .dev.vars.example
 ├── .gitignore
 └── README.md
-```
-
----
-
-## 🛡️ Cloudflare WAF Configuration
-
-Once Auto Guard registers an IP to the configured Cloudflare List (e.g., `AUTO_GUARD_BLOCK`), configure a Cloudflare WAF Custom Rule in your zone dashboard:
-
-* **Rule Name**: `Auto Guard IP Block Rule`
-* **Expression**:
-  ```text
-  ip.src in $AUTO_GUARD_BLOCK
-  ```
-* **Action**: `Block`
-
-Any IP listed by the Worker will immediately be dropped at the Cloudflare edge before reaching origin infrastructure.
-
----
-
-## 🛠️ Getting Started & Local Development
-
-### 1. Install Dependencies
-```bash
-npm install
-```
-
-### 2. Configure Environment Variables
-Copy `.dev.vars.example` to `.dev.vars`:
-```bash
-cp .dev.vars.example .dev.vars
-```
-Fill in your Cloudflare credentials:
-```ini
-CF_API_TOKEN=your_cloudflare_api_token
-CF_ACCOUNT_ID=your_cloudflare_account_id
-CF_LIST_ID=your_cloudflare_list_id
-DRY_RUN=true
-```
-
-### 3. Run Locally
-```bash
-npm run dev
-```
-
-### 4. Run Unit & Integration Tests
-```bash
-npm test
-```
-
----
-
-## 🚢 Production Deployment
-
-```bash
-# 1. Typecheck the codebase
-npm run typecheck
-
-# 2. Deploy to Cloudflare
-npm run deploy
 ```
 
 ---
@@ -264,8 +267,6 @@ npm run deploy
 ## ⚖️ License
 
 Distributed under the MIT License. See `LICENSE` for more information.
-
----
 
 <p align="center">
   <i>Made with ☕ and passion in the dev cave.</i>
