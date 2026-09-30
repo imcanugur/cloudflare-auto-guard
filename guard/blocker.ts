@@ -38,6 +38,25 @@ export class Blocker {
     this.blockedCache = new Set(ips);
   }
 
+  /**
+   * Warms local cache with existing items from the Cloudflare IP List for 100% idempotency
+   */
+  public async syncExistingList(): Promise<void> {
+    if (!this.listsService || !this.listId) return;
+    try {
+      const items = await this.listsService.getListItems(this.listId);
+      for (const item of items) {
+        if (item && item.ip) {
+          this.blockedCache.add(item.ip);
+        }
+      }
+    } catch (err) {
+      logger.warn("SYNC_EXISTING_LIST_FAILED", {
+        message: (err as Error).message
+      });
+    }
+  }
+
   public async executeBlock(decision: GuardDecision): Promise<GuardDecision> {
     const { ip, country, asn, requestCount, rank, threshold, windowSeconds } = decision;
 
@@ -99,6 +118,22 @@ export class Blocker {
       metrics.increment("blocked_ips");
       return decision;
     } catch (err) {
+      const msg = (err as Error).message.toLowerCase();
+      if (
+        msg.includes("duplicate") ||
+        msg.includes("already exists") ||
+        msg.includes("10002") ||
+        msg.includes("10008")
+      ) {
+        this.markBlockedLocal(ip);
+        logger.info("IP_ALREADY_EXISTS_IN_LIST", { ip, country });
+        return {
+          ...decision,
+          action: "IGNORE",
+          reason: DecisionReason.ALREADY_BLOCKED
+        };
+      }
+
       metrics.increment("cloudflare_api_errors");
       logger.error("BLOCK_EXECUTION_FAILED", {
         ip,

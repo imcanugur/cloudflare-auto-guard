@@ -37,13 +37,16 @@ export class DecisionEngine {
     const windowSeconds = policy.windowSeconds ?? 300;
     const topN = policy.topN ?? 100;
 
-    // 1. Fetch real edge Top-N IP statistics directly from Cloudflare GraphQL Analytics
+    // 1. Sync existing blocked IPs from Cloudflare List for 100% idempotency
+    await this.blocker.syncExistingList();
+
+    // 2. Fetch real edge Top-N IP statistics directly from Cloudflare GraphQL Analytics
     const candidates = await this.analyticsService.fetchTopIps(zoneId, windowSeconds, topN);
     metrics.increment("top_n_candidates", candidates.length);
 
     const decisions: GuardDecision[] = [];
 
-    // 2. Evaluate each candidate against the resolved country policy
+    // 3. Evaluate each candidate against the resolved country policy
     for (const candidate of candidates) {
       const isAlreadyBlocked = this.blocker.isAlreadyBlocked(candidate.ip);
 
