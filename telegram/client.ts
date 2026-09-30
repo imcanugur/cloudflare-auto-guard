@@ -144,4 +144,27 @@ export class TelegramClient {
       return { ok: false, description: (err as Error).message };
     }
   }
+
+  /**
+   * Registers slash commands in Telegram so they show up in the autocomplete menu
+   */
+  public async setMyCommands(
+    commands: Array<{ command: string; description: string }>
+  ): Promise<{ ok: boolean; description?: string }> {
+    if (!this.isConfigured()) {
+      return { ok: false, description: "TELEGRAM_BOT_TOKEN is missing or invalid." };
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/setMyCommands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commands })
+      });
+
+      return (await response.json()) as { ok: boolean; description?: string };
+    } catch (err) {
+      return { ok: false, description: (err as Error).message };
+    }
+  }
 }

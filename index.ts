@@ -168,17 +168,29 @@ export default {
       }
     }
 
-    // 0.9. Telegram One-Click Webhook Registration
+    // 0.9. Telegram One-Click Webhook & Commands Registration
     if (url.pathname === "/__guard/telegram/setup") {
       const { telegramClient } = createServices(env);
       const webhookUrl = `${url.origin}/__guard/telegram/webhook`;
-      const result = await telegramClient.setWebhook(webhookUrl);
+      const webhookResult = await telegramClient.setWebhook(webhookUrl);
+      const commandsResult = await telegramClient.setMyCommands([
+        { command: "status", description: "System health and active banned IP count" },
+        { command: "evaluate", description: "Trigger edge traffic evaluation now" },
+        { command: "list", description: "View currently banned IPs in Cloudflare WAF" },
+        { command: "ban", description: "Manually block an IP: /ban <ip> [reason]" },
+        { command: "unban", description: "Remove an IP from blocklist: /unban <ip>" },
+        { command: "policy", description: "View active threshold and protection policy" },
+        { command: "admins", description: "List authorized administrator accounts" },
+        { command: "help", description: "Show interactive control panel and menu" }
+      ]);
+
       return new Response(
         JSON.stringify(
           {
-            status: result.ok ? "success" : "failed",
+            status: webhookResult.ok && commandsResult.ok ? "success" : "partial_or_failed",
             webhookUrl,
-            telegramResponse: result
+            webhookResponse: webhookResult,
+            commandsResponse: commandsResult
           },
           null,
           2

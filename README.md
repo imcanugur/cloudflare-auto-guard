@@ -271,12 +271,28 @@ npx wrangler deploy
 > **Multi-Admin & Group Support**:  
 > You can pass multiple individual user IDs (e.g. `11111,22222`) or an entire **Telegram Group / Channel ID** (e.g. `-1001234567890`). All admins receive real-time alerts simultaneously, and any authorized admin can run commands or click the inline unban button.
 
-#### Step 3: Register Webhook in One Click
+#### Step 3: Register Webhook & Autocomplete Commands
 Open the setup endpoint in your browser or curl:
 ```bash
 curl https://cloudflare-auto-guard.<subdomain>.workers.dev/__guard/telegram/setup
 ```
-*Done!* Your Telegram Bot is now registered and active on Cloudflare Edge with two-way communication.
+*Done!* Your Telegram Bot is now registered and active on Cloudflare Edge with two-way communication. This endpoint automatically registers both the **Webhook URL** and the **Autocomplete Slash Commands** via Telegram's `setMyCommands` API!
+
+---
+
+#### 💡 Optional: BotFather `/setcommands` (Manual Menu Setup)
+If you prefer to configure the command menu manually in **[@BotFather](https://t.me/BotFather)**, send `/setcommands`, choose your bot, and copy-paste this block:
+
+```text
+status - System health and active banned IP count
+evaluate - Trigger edge traffic evaluation now
+list - View currently banned IPs in Cloudflare WAF
+ban - Manually block an IP: /ban <ip> [reason]
+unban - Remove an IP from blocklist: /unban <ip>
+policy - View active threshold and protection policy
+admins - List authorized administrator accounts
+help - Show interactive control panel and menu
+```
 
 ---
 
