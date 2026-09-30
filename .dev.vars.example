@@ -7,5 +7,9 @@ CF_LIST_ID=your_cloudflare_list_id_here
 # Runtime switches
 DRY_RUN=false
 
-# Optional Admin Security Token (Protects /__guard/* management routes from public access)
+# Optional Admin Security Token (Protects REST /__guard/* routes from public access)
 GUARD_ADMIN_TOKEN=your_super_secret_admin_token_here
+
+# Telegram Bot Integration (Two-way interactive commands & real-time push alerts)
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRstuVWXyz
+TELEGRAM_ADMIN_CHAT_ID=123456789

@@ -43,6 +43,18 @@ export class Blocker {
     this.blockedCache.add(ip);
   }
 
+  public markUnblockedLocal(ip: string): void {
+    this.blockedCache.delete(ip);
+  }
+
+  public markAsBlockedLocally(ip: string): void {
+    this.markBlockedLocal(ip);
+  }
+
+  public markAsUnblockedLocally(ip: string): void {
+    this.markUnblockedLocal(ip);
+  }
+
   public setBlockedList(ips: string[]): void {
     this.blockedCache = new Set(ips);
   }

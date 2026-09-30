@@ -4,7 +4,7 @@
  * Automatically inspects Cloudflare GraphQL Zone Analytics, identifies high-frequency
  * malicious IPs based on country policies, and mitigates them via Cloudflare Lists API & WAF.
  *
- * Pure Headless JSON API — All administration is performed via terminal cURL.
+ * Multi-Interface: Headless JSON API via cURL + Complete Two-Way Interactive Telegram Bot.
  */
 import { DEFAULT_GUARD_POLICY } from "@/config/defaults";
 import { GuardPolicy } from "@/domain/models/policy";
@@ -15,6 +15,9 @@ import { AllowlistMatcher } from "@/security/allowlist";
 import { CloudflareApiClient } from "@/cloudflare/client";
 import { CloudflareListsService } from "@/cloudflare/lists";
 import { CloudflareAnalyticsService } from "@/cloudflare/analytics";
+import { TelegramClient } from "@/telegram/client";
+import { TelegramBotHandler } from "@/telegram/bot";
+import { TelegramUpdate } from "@/telegram/types";
 import { logger } from "@/observability/logger";
 import { metrics } from "@/observability/metrics";
 
@@ -27,6 +30,8 @@ export interface Env {
   CF_LIST_NAME?: string;
   DRY_RUN?: string;
   GUARD_ADMIN_TOKEN?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_ADMIN_CHAT_ID?: string;
 }
 
 // Runtime in-memory policy state & allowlist
@@ -75,22 +80,42 @@ function createServices(env: Env) {
     allowlistMatcher
   });
 
-  return { decisionEngine, listsService, blocker };
+  const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN || "");
+  const adminChatIds = (env.TELEGRAM_ADMIN_CHAT_ID || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const telegramBot = new TelegramBotHandler({
+    client: telegramClient,
+    adminChatIds,
+    listsService,
+    decisionEngine,
+    blocker,
+    listId: env.CF_LIST_ID,
+    zoneId: env.CF_ZONE_ID,
+    getPolicy: () => getActivePolicy(env)
+  });
+
+  return { decisionEngine, listsService, blocker, telegramClient, telegramBot };
 }
 
 export default {
   /**
-   * Main request handler: Pure JSON API for cURL administration
+   * Main request handler: JSON API + Telegram Bot Webhook
    */
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // 0. Security Guard: Protect admin/mutation routes with GUARD_ADMIN_TOKEN
-    const isPublicHealth =
+    // 0. Public routes: healthchecks, debug, and incoming Telegram webhook
+    const isPublicRoute =
       url.pathname === "/health" ||
       url.pathname === "/__guard/health" ||
       url.pathname === "/_debug" ||
-      url.pathname === "/__guard/debug";
+      url.pathname === "/__guard/debug" ||
+      url.pathname === "/__guard/telegram/webhook" ||
+      url.pathname === "/__guard/telegram" ||
+      url.pathname === "/telegram";
 
     // 0.5. Debug endpoint: Diagnostic check of environment variables presence
     if (url.pathname === "/_debug" || url.pathname === "/__guard/debug") {
@@ -103,6 +128,8 @@ export default {
             CF_ZONE_ID: !!env.CF_ZONE_ID,
             DRY_RUN: env.DRY_RUN,
             GUARD_ADMIN_TOKEN: !!env.GUARD_ADMIN_TOKEN,
+            TELEGRAM_BOT_TOKEN: !!env.TELEGRAM_BOT_TOKEN,
+            TELEGRAM_ADMIN_CHAT_ID: !!env.TELEGRAM_ADMIN_CHAT_ID,
             POLICY_KV: !!env.POLICY_KV,
             allEnvKeys: Object.keys(env || {})
           },
@@ -113,7 +140,55 @@ export default {
       );
     }
 
-    if (!isPublicHealth) {
+    // 0.8. Telegram Webhook Endpoint (Receives updates from Telegram servers)
+    if (
+      url.pathname === "/__guard/telegram/webhook" ||
+      url.pathname === "/__guard/telegram" ||
+      url.pathname === "/telegram"
+    ) {
+      if (request.method !== "POST") {
+        return new Response(
+          JSON.stringify({ status: "ok", message: "Telegram webhook endpoint ready. Send POST updates here." }),
+          { headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const { telegramBot } = createServices(env);
+      try {
+        const update = (await request.json()) as TelegramUpdate;
+        ctx.waitUntil(telegramBot.handleUpdate(update));
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ ok: false, error: (err as Error).message }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // 0.9. Telegram One-Click Webhook Registration
+    if (url.pathname === "/__guard/telegram/setup") {
+      const { telegramClient } = createServices(env);
+      const webhookUrl = `${url.origin}/__guard/telegram/webhook`;
+      const result = await telegramClient.setWebhook(webhookUrl);
+      return new Response(
+        JSON.stringify(
+          {
+            status: result.ok ? "success" : "failed",
+            webhookUrl,
+            telegramResponse: result
+          },
+          null,
+          2
+        ),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // 1. Security Guard for REST API: Protect admin/mutation routes with GUARD_ADMIN_TOKEN
+    if (!isPublicRoute) {
       const adminToken = env.GUARD_ADMIN_TOKEN;
       if (adminToken) {
         const providedToken = request.headers.get("X-Guard-Token") || url.searchParams.get("token");
@@ -133,28 +208,28 @@ export default {
       }
     }
 
-    // 1. Healthcheck endpoint
+    // 2. Healthcheck endpoint
     if (url.pathname === "/health" || url.pathname === "/__guard/health") {
       return new Response(JSON.stringify({ status: "healthy", timestamp: Date.now() }, null, 2), {
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    // 2. Metrics endpoint
+    // 3. Metrics endpoint
     if (url.pathname === "/__guard/metrics") {
       return new Response(JSON.stringify(metrics.getSnapshot(), null, 2), {
         headers: { "Content-Type": "application/json" }
       });
     }
 
-    const { decisionEngine } = createServices(env);
+    const { decisionEngine, telegramBot } = createServices(env);
     const activePolicy = await getActivePolicy(env);
 
     if (activePolicy.allowlist && activePolicy.allowlist.length > 0) {
       allowlistMatcher.update(activePolicy.allowlist);
     }
 
-    // 3. Policy View & Upload / Mutation API endpoint (cURL)
+    // 4. Policy View & Upload / Mutation API endpoint (cURL)
     if (url.pathname === "/__guard/policy" || url.pathname === "/policy") {
       if (request.method === "POST" || request.method === "PUT") {
         try {
@@ -216,7 +291,7 @@ export default {
       });
     }
 
-    // 4. Manual evaluation endpoint: Fetches edge analytics and evaluates top IPs immediately
+    // 5. Manual evaluation endpoint: Fetches edge analytics and evaluates top IPs immediately
     if (url.pathname === "/__guard/evaluate" || url.pathname === "/evaluate") {
       const zoneId = env.CF_ZONE_ID || url.searchParams.get("zoneId") || "";
 
@@ -231,6 +306,10 @@ export default {
       }
 
       const decisions = await decisionEngine.evaluateCandidates(activePolicy, zoneId);
+
+      // Push real-time alert to Telegram admins if threats were blocked
+      ctx.waitUntil(telegramBot.notifyBannedIps(decisions));
+
       return new Response(
         JSON.stringify(
           {
@@ -253,12 +332,15 @@ export default {
       JSON.stringify(
         {
           status: "active",
-          guard: "Cloudflare Auto Guard (Headless Edge Engine)",
+          guard: "Cloudflare Auto Guard (Edge Engine)",
+          telegramBot: !!env.TELEGRAM_BOT_TOKEN ? "enabled" : "disabled",
           zoneId: env.CF_ZONE_ID ? `${env.CF_ZONE_ID.slice(0, 6)}...` : "NOT_CONFIGURED",
-          curlExamples: {
-            viewPolicy: "curl https://your-worker/__guard/policy",
-            updatePolicy: "curl -X POST https://your-worker/__guard/policy -H 'Content-Type: application/json' -d @policy.json",
-            runEvaluate: "curl -X POST https://your-worker/__guard/evaluate"
+          interfaces: {
+            telegramWebhook: "/__guard/telegram/webhook",
+            telegramSetup: "/__guard/telegram/setup",
+            policy: "/__guard/policy",
+            evaluate: "/__guard/evaluate",
+            health: "/__guard/health"
           }
         },
         null,
@@ -282,7 +364,7 @@ export default {
       return;
     }
 
-    const { decisionEngine } = createServices(env);
+    const { decisionEngine, telegramBot } = createServices(env);
     const activePolicy = await getActivePolicy(env);
 
     if (activePolicy.allowlist && activePolicy.allowlist.length > 0) {
@@ -290,11 +372,16 @@ export default {
     }
 
     ctx.waitUntil(
-      decisionEngine.evaluateCandidates(activePolicy, zoneId).catch((err) => {
-        logger.error("SCHEDULED_EVALUATION_FAILED", {
-          message: (err as Error).message
-        });
-      })
+      decisionEngine
+        .evaluateCandidates(activePolicy, zoneId)
+        .then((decisions) => {
+          return telegramBot.notifyBannedIps(decisions);
+        })
+        .catch((err) => {
+          logger.error("SCHEDULED_EVALUATION_FAILED", {
+            message: (err as Error).message
+          });
+        })
     );
   }
 };

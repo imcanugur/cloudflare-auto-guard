@@ -205,12 +205,87 @@ curl https://cloudflare-auto-guard.<subdomain>.workers.dev/_debug
 
 ---
 
+## 🤖 Telegram Bot Control Center & Real-Time Alerts
+
+Manage, monitor, and unban IPs directly from your phone or desktop via a secure, two-way Telegram Bot integrated directly into Cloudflare Workers!
+
+### 📱 1. Interactive Bot Commands
+
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `/status` | Live system health, active policy summary, and current banned IP count | `/status` |
+| `/evaluate` | Instantly queries GraphQL Analytics and evaluates live edge traffic | `/evaluate` |
+| `/list` | Shows currently active banned IPs in Cloudflare WAF with unban buttons | `/list` |
+| `/ban <ip> [reason]` | Manually adds an IP to Cloudflare Rules List in real-time | `/ban 198.51.100.4 Scraper bot` |
+| `/unban <ip>` | Removes an IP from Cloudflare Rules List and clears local cache | `/unban 198.51.100.4` |
+| `/policy` | Displays the active protection policy JSON in formatted code | `/policy` |
+| `/help` | Interactive control panel with instant action buttons | `/help` |
+
+---
+
+### 🚨 2. Real-Time Push Alerts with 1-Click Unban
+
+Whenever the automated cron detects high-frequency attacks or policy violations, it instantly pushes a card directly to your Telegram chat:
+
+```text
+🚨 Auto Guard: Threat Detected & Mitigated!
+━━━━━━━━━━━━━━━━━━━━
+🌐 IP: 185.220.101.5
+🏳️ Country: Russia (RU)
+📊 Traffic: 1,420 requests (Threshold: 300)
+🏷️ Rank: #1
+📝 Reason: Exceeded country RU limit of 300 requests
+━━━━━━━━━━━━━━━━━━━━
+⏰ 2026-09-30 15:20:00 UTC
+
+[ 🔓 Unban (185.220.101.5) ]  <-- (Interactive Inline Button)
+```
+
+> **Single-Click Unban**: Tapping the **[ 🔓 Unban ]** button immediately invokes the Cloudflare Rules Lists API, deletes the IP, purges the local cache, and edits the Telegram card to:  
+> `✅ [UNBANNED] (by @admin_username)`.
+
+---
+
+### 🛠️ 3. Telegram Bot Setup (in 3 Simple Steps)
+
+#### Step 1: Create Your Bot & Obtain Chat ID
+1. Open Telegram and search for **[@BotFather](https://t.me/BotFather)**. Send `/newbot`, name your bot, and copy the provided `HTTP API Token`.
+2. Search for **[@userinfobot](https://t.me/userinfobot)** in Telegram to retrieve your numeric `Id` (used as `TELEGRAM_ADMIN_CHAT_ID` to restrict bot access exclusively to you).
+
+#### Step 2: Store Secrets in Cloudflare
+```bash
+# Save your Telegram Bot Token
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+# Paste your BotFather token when prompted
+
+# Save your Telegram Admin Chat ID (comma-separated for multiple admins: 12345,67890)
+npx wrangler secret put TELEGRAM_ADMIN_CHAT_ID
+# Paste your user ID when prompted
+
+# Deploy your Worker
+npx wrangler deploy
+```
+
+#### Step 3: Register Webhook in One Click
+Open the setup endpoint in your browser or curl:
+```bash
+curl https://cloudflare-auto-guard.<subdomain>.workers.dev/__guard/telegram/setup
+```
+*Done!* Your Telegram Bot is now registered and active on Cloudflare Edge with two-way communication.
+
+---
+
 ## 📁 Project Directory Structure
 
 ```text
 cloudflare-auto-guard/
 │
-├── index.ts                     # Worker entry point (Fetch, Cron Scheduled, & API routes)
+├── index.ts                     # Worker entry point (Fetch, Cron, REST API & Telegram Webhook)
+│
+├── telegram/                    # Telegram Bot Subsystem (Edge-Native)
+│   ├── bot.ts                   # Command router, interactive callbacks & alert dispatcher
+│   ├── client.ts                # Telegram Bot HTTP API client (sendMessage, setWebhook, etc.)
+│   └── types.ts                 # Telegram Update, Message & Keyboard contract types
 │
 ├── config/
 │   ├── config-loader.ts         # Runtime policy loader with fail-safe defaults
