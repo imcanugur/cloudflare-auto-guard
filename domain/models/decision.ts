@@ -23,6 +23,7 @@ export interface GuardDecision {
   reason: DecisionReasonCode | string;
   ip: string;
   country: string;
+  asn?: string;
   requestCount: number;
   rank: number;
   threshold: number;

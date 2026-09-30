@@ -39,16 +39,24 @@ export class Blocker {
   }
 
   public async executeBlock(decision: GuardDecision): Promise<GuardDecision> {
-    const { ip, country, requestCount, rank, threshold } = decision;
+    const { ip, country, asn, requestCount, rank, threshold, windowSeconds } = decision;
+
+    const windowMinutes = Math.max(1, Math.round((windowSeconds || 3600) / 60));
+    const windowStr = windowMinutes >= 60 ? `${Math.round(windowMinutes / 60)}h` : `${windowMinutes}m`;
+    const dateStr = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    const asnStr = asn ? ` | ASN: ${asn.slice(0, 24).trim()}` : "";
+    const comment = `Auto Guard: ${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;
 
     // Dry-run mode handling
     if (this.dryRun) {
       logger.info("WOULD_BLOCK", {
         ip,
         country,
+        asn,
         requests: requestCount,
         rank,
         threshold,
+        comment,
         action: "BLOCK",
         reason: "DRY_RUN_POLICY_MATCH"
       });
@@ -71,7 +79,7 @@ export class Blocker {
       await this.listsService.addIpToList(
         this.listId,
         ip,
-        `Auto Guard: ${country} | Req: ${requestCount} | Rank: ${rank}`
+        comment
       );
 
       this.markBlockedLocal(ip);
@@ -79,9 +87,11 @@ export class Blocker {
       logger.info("GUARD_DECISION", {
         ip,
         country,
+        asn,
         requests: requestCount,
         rank,
         threshold,
+        comment,
         action: "BLOCK",
         reason: DecisionReason.POLICY_MATCH
       });

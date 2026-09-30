@@ -5,6 +5,7 @@
 export interface TrafficCandidate {
   ip: string;
   country: string;
+  asn?: string;
   requestCount: number;
   rank: number;
 }

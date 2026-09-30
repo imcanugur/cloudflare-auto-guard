@@ -50,6 +50,7 @@ export class DecisionEngine {
       const decision = CandidateEvaluator.evaluate({
         ip: candidate.ip,
         country: candidate.country,
+        asn: candidate.asn,
         requestCount: candidate.requestCount,
         rank: candidate.rank,
         policy,

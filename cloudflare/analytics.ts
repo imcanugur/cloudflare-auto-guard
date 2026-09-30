@@ -14,6 +14,7 @@ interface GraphQLAnalyticsResponse {
           dimensions: {
             clientIP: string;
             clientCountryName: string;
+            clientASNDescription?: string;
           };
         }>;
       }>;
@@ -54,6 +55,7 @@ export class CloudflareAnalyticsService {
               dimensions {
                 clientIP
                 clientCountryName
+                clientASNDescription
               }
             }
           }
@@ -85,6 +87,7 @@ export class CloudflareAnalyticsService {
         .map((g, index) => ({
           ip: g.dimensions.clientIP,
           country: (g.dimensions.clientCountryName || "XX").toUpperCase(),
+          asn: g.dimensions.clientASNDescription || undefined,
           requestCount: g.count,
           rank: index + 1
         }));
