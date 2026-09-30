@@ -94,7 +94,16 @@ function createServices(env: Env) {
     blocker,
     listId: env.CF_LIST_ID,
     zoneId: env.CF_ZONE_ID,
-    getPolicy: () => getActivePolicy(env)
+    getPolicy: () => getActivePolicy(env),
+    savePolicy: async (newPolicy: GuardPolicy) => {
+      if (env.POLICY_KV) {
+        await env.POLICY_KV.put("guard:policy", JSON.stringify(newPolicy, null, 2));
+      }
+      runtimePolicy = newPolicy;
+      if (runtimePolicy.allowlist) {
+        allowlistMatcher.update(runtimePolicy.allowlist);
+      }
+    }
   });
 
   return { decisionEngine, listsService, blocker, telegramClient, telegramBot };

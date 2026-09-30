@@ -8,6 +8,7 @@ import { DecisionEngine } from "@/guard/decision-engine";
 import { Blocker } from "@/guard/blocker";
 import { GuardPolicy } from "@/domain/models/policy";
 import { GuardDecision } from "@/domain/models/decision";
+import { safeValidatePolicy } from "@/config/policy-schema";
 
 export interface TelegramBotOptions {
   client: TelegramClient;
@@ -18,6 +19,7 @@ export interface TelegramBotOptions {
   listId?: string;
   zoneId?: string;
   getPolicy: () => Promise<GuardPolicy>;
+  savePolicy?: (policy: GuardPolicy) => Promise<void>;
 }
 
 export class TelegramBotHandler {
@@ -29,6 +31,7 @@ export class TelegramBotHandler {
   private listId?: string;
   private zoneId?: string;
   private getPolicy: () => Promise<GuardPolicy>;
+  private savePolicy?: (policy: GuardPolicy) => Promise<void>;
 
   constructor(options: TelegramBotOptions) {
     this.client = options.client;
@@ -39,6 +42,7 @@ export class TelegramBotHandler {
     this.listId = options.listId;
     this.zoneId = options.zoneId;
     this.getPolicy = options.getPolicy;
+    this.savePolicy = options.savePolicy;
   }
 
   /**
@@ -50,6 +54,22 @@ export class TelegramBotHandler {
     if (userId !== undefined && this.adminChatIds.has(String(userId))) return true;
     if (chatId !== undefined && this.adminChatIds.has(String(chatId))) return true;
     return false;
+  }
+
+  /**
+   * Safely validates and persists a policy update
+   */
+  private async savePolicySafely(policy: GuardPolicy): Promise<{ success: boolean; error?: string }> {
+    if (!this.savePolicy) {
+      return { success: false, error: "Policy persistence is not configured." };
+    }
+    const validation = safeValidatePolicy(policy);
+    if (!validation.success) {
+      const errMsg = validation.error?.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+      return { success: false, error: errMsg || "Invalid policy schema" };
+    }
+    await this.savePolicy(validation.data as GuardPolicy);
+    return { success: true };
   }
 
   /**
@@ -118,6 +138,33 @@ export class TelegramBotHandler {
       case "/unban":
         await this.executeUnban(chatId, args);
         break;
+      case "/set_threshold":
+        await this.executeSetThreshold(chatId, args[0]);
+        break;
+      case "/set_window":
+        await this.executeSetWindow(chatId, args[0]);
+        break;
+      case "/set_topn":
+        await this.executeSetTopN(chatId, args[0]);
+        break;
+      case "/set_country":
+        await this.executeSetCountry(chatId, args[0], args[1], args[2]);
+        break;
+      case "/remove_country":
+        await this.executeRemoveCountry(chatId, args[0]);
+        break;
+      case "/allow":
+        await this.executeAllow(chatId, args[0]);
+        break;
+      case "/disallow":
+        await this.executeDisallow(chatId, args[0]);
+        break;
+      case "/set_ttl":
+        await this.executeSetTtl(chatId, args[0]);
+        break;
+      case "/set_policy":
+        await this.executeSetPolicyJson(chatId, text.replace(/^\/set_policy\s*/i, ""));
+        break;
       default:
         await this.client.sendMessage(
           chatId,
@@ -135,16 +182,26 @@ export class TelegramBotHandler {
   private async sendHelp(chatId: number): Promise<void> {
     const text =
       `🛡️ <b>Cloudflare Auto Guard — Control Center</b>\n\n` +
-      `Manage and inspect edge security directly from Telegram:\n\n` +
-      `<b>⚡ Available Commands:</b>\n` +
+      `Manage, inspect, and update edge security directly from Telegram:\n\n` +
+      `<b>⚡ Core Commands:</b>\n` +
       `• /status — Real-time system health and WAF metrics\n` +
       `• /evaluate — Trigger edge GraphQL traffic analysis now\n` +
       `• /list — View currently banned IPs in Cloudflare WAF\n` +
       `• /ban &lt;IP&gt; [reason] — Manually add an IP to the WAF list\n` +
       `• /unban &lt;IP1&gt; [IP2...] — Remove one or multiple IPs at once\n` +
       `• /flush — Wipe and unban all currently blocked IPs\n` +
-      `• /policy — View active threshold and protection policy\n` +
+      `• /policy — View active policy with 1-click preset buttons\n` +
       `• /admins — View authorized administrator accounts\n\n` +
+      `<b>⚙️ Policy Update Commands:</b>\n` +
+      `• /set_threshold &lt;reqs&gt; — Set default threshold (e.g. <code>/set_threshold 300</code>)\n` +
+      `• /set_window &lt;seconds&gt; — Set inspection window (e.g. <code>/set_window 900</code>)\n` +
+      `• /set_topn &lt;count&gt; — Set Top-N candidates (e.g. <code>/set_topn 50</code>)\n` +
+      `• /set_country &lt;CODE&gt; &lt;reqs&gt; — Country rule (e.g. <code>/set_country RU 100</code>)\n` +
+      `• /remove_country &lt;CODE&gt; — Delete country override (e.g. <code>/remove_country RU</code>)\n` +
+      `• /allow &lt;IP/CIDR&gt; — Add to allowlist (e.g. <code>/allow 1.1.1.1</code>)\n` +
+      `• /disallow &lt;IP/CIDR&gt; — Remove from allowlist\n` +
+      `• /set_ttl &lt;hours|seconds&gt; — Set unban TTL (e.g. <code>/set_ttl 24h</code>)\n` +
+      `• /set_policy &lt;JSON&gt; — Upload raw policy JSON directly\n\n` +
       `<i>Use the quick action buttons below:</i>`;
 
     const keyboard: TelegramInlineKeyboardMarkup = {
@@ -177,6 +234,7 @@ export class TelegramBotHandler {
 
     const unbanTtlHours = Math.round((policy.unban?.ttlSeconds ?? 86400) / 3600);
     const maxLimit = policy.unban?.maxListSize ?? 9000;
+    const countryCount = Object.keys(policy.countries || {}).length;
 
     const text =
       `📊 <b>Auto Guard System Status</b>\n` +
@@ -188,8 +246,9 @@ export class TelegramBotHandler {
       `🚫 <b>Active Banned IPs:</b> <b>${itemCount}</b> / 10,000\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `⚙️ <b>Policy Summary:</b>\n` +
-      `• Default Threshold: <b>${policy.defaultThreshold} reqs</b> / ${policy.windowSeconds}s\n` +
-      `• Top-N Sampling: <b>${policy.topN} IPs</b>\n` +
+      `• Default Threshold: <b>${policy.default.threshold} reqs</b> / ${policy.windowSeconds || 300}s\n` +
+      `• Top-N Sampling: <b>${policy.topN || 100} IPs</b>\n` +
+      `• Country Overrides: <b>${countryCount} rules</b>\n` +
       `• Automated Unban (TTL): <b>${unbanTtlHours} Hours</b>\n` +
       `• Max List Ceiling: <b>${maxLimit} IPs</b>\n` +
       `• Allowlist Size: <b>${policy.allowlist?.length || 0} CIDRs</b>\n` +
@@ -201,6 +260,9 @@ export class TelegramBotHandler {
         [
           { text: "⚡ Evaluate Now", callback_data: "cmd:evaluate" },
           { text: "📋 Banned IPs", callback_data: "cmd:list" }
+        ],
+        [
+          { text: "📜 View / Edit Policy", callback_data: "cmd:policy" }
         ]
       ]
     };
@@ -304,16 +366,362 @@ export class TelegramBotHandler {
   }
 
   /**
-   * /policy command: Displays current protection rules
+   * /policy command: Displays current protection rules with quick preset adjustment buttons
    */
-  private async sendPolicy(chatId: number): Promise<void> {
+  private async sendPolicy(chatId: number, messageId?: number): Promise<void> {
     const policy = await this.getPolicy();
     const formatted = JSON.stringify(policy, null, 2);
 
+    const countryCount = Object.keys(policy.countries || {}).length;
+    const allowCount = policy.allowlist?.length || 0;
+    const ttlHours = Math.round((policy.unban?.ttlSeconds ?? 86400) / 3600);
+
+    const text =
+      `📜 <b>Active Security Policy</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🛡️ <b>Default Threshold:</b> <b>${policy.default.threshold} reqs</b> / ${policy.windowSeconds || 300}s\n` +
+      `🔍 <b>Top-N Sample Size:</b> <b>${policy.topN || 100} IPs</b>\n` +
+      `🏳️ <b>Country Overrides:</b> <b>${countryCount} rules</b>\n` +
+      `🛡️ <b>Allowlist Size:</b> <b>${allowCount} CIDRs</b>\n` +
+      `🧹 <b>Auto-Unban (TTL):</b> <b>${ttlHours} Hours</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `<b>JSON Schema:</b>\n` +
+      `<pre><code class="language-json">${formatted}</code></pre>\n\n` +
+      `<i>Quickly adjust threshold or window using the buttons below, or use /set_threshold, /set_country, etc.</i>`;
+
+    const keyboard: TelegramInlineKeyboardMarkup = {
+      inline_keyboard: [
+        [
+          { text: "⚡ Thresh: 150", callback_data: "set_th:150" },
+          { text: "⚡ Thresh: 300", callback_data: "set_th:300" },
+          { text: "⚡ Thresh: 500", callback_data: "set_th:500" }
+        ],
+        [
+          { text: "⏳ Win: 5m", callback_data: "set_win:300" },
+          { text: "⏳ Win: 15m", callback_data: "set_win:900" },
+          { text: "⏳ Win: 1h", callback_data: "set_win:3600" }
+        ],
+        [
+          { text: "🔄 Refresh", callback_data: "cmd:policy" }
+        ]
+      ]
+    };
+
+    if (messageId) {
+      await this.client.editMessageText(chatId, messageId, text, { reply_markup: keyboard });
+    } else {
+      await this.client.sendMessage(chatId, text, { reply_markup: keyboard });
+    }
+  }
+
+  /**
+   * /set_threshold command: Updates default request limit
+   */
+  private async executeSetThreshold(chatId: number, rawVal?: string): Promise<void> {
+    const val = parseInt(rawVal || "", 10);
+    if (isNaN(val) || val <= 0) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_threshold &lt;number&gt;</code>\nExample: <code>/set_threshold 300</code>"
+      );
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.default.threshold = val;
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update threshold: ${res.error}`);
+      return;
+    }
+
     await this.client.sendMessage(
       chatId,
-      `📜 <b>Active Protection Policy:</b>\n<pre><code class="language-json">${formatted}</code></pre>`
+      `✅ <b>Default Threshold Updated!</b>\nNew Threshold: <b>${val} requests</b> / ${policy.windowSeconds || 300}s\nPolicy is now active across all Cloudflare edge nodes.`
     );
+  }
+
+  /**
+   * /set_window command: Updates analytics inspection timeframe
+   */
+  private async executeSetWindow(chatId: number, rawVal?: string): Promise<void> {
+    const val = parseInt(rawVal || "", 10);
+    if (isNaN(val) || val <= 0) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_window &lt;seconds&gt;</code>\nExample: <code>/set_window 900</code> (15 mins)"
+      );
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.windowSeconds = val;
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update window: ${res.error}`);
+      return;
+    }
+
+    const mins = Math.round(val / 60);
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Inspection Window Updated!</b>\nNew Window: <b>${val} seconds</b> (${mins} minutes)`
+    );
+  }
+
+  /**
+   * /set_topn command: Updates top candidate sample size
+   */
+  private async executeSetTopN(chatId: number, rawVal?: string): Promise<void> {
+    const val = parseInt(rawVal || "", 10);
+    if (isNaN(val) || val <= 0) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_topn &lt;number&gt;</code>\nExample: <code>/set_topn 50</code>"
+      );
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.topN = val;
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update Top-N: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Top-N Sample Size Updated!</b>\nNew Top-N: <b>${val} candidates</b> analyzed per evaluation cycle.`
+    );
+  }
+
+  /**
+   * /set_country command: Adds or modifies country policy rule
+   */
+  private async executeSetCountry(
+    chatId: number,
+    rawCode?: string,
+    rawTh?: string,
+    rawAction?: string
+  ): Promise<void> {
+    if (!rawCode || !rawTh) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_country &lt;CODE&gt; &lt;threshold&gt; [block|challenge]</code>\nExample: <code>/set_country RU 100</code>"
+      );
+      return;
+    }
+
+    const code = rawCode.trim().toUpperCase();
+    const threshold = parseInt(rawTh, 10);
+    if (isNaN(threshold) || threshold <= 0) {
+      await this.client.sendMessage(chatId, "⚠️ Threshold must be a positive integer.");
+      return;
+    }
+
+    const action = rawAction?.toLowerCase() === "challenge" ? "challenge" : "block";
+    const policy = await this.getPolicy();
+    policy.countries = policy.countries || {};
+    policy.countries[code] = {
+      ...policy.countries[code],
+      enabled: true,
+      threshold,
+      action
+    };
+
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update country rule: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Country Policy Updated!</b>\nCountry: <b>${code}</b>\nThreshold: <b>${threshold} requests</b>\nAction: <b>${action.toUpperCase()}</b>`
+    );
+  }
+
+  /**
+   * /remove_country command: Deletes a country override
+   */
+  private async executeRemoveCountry(chatId: number, rawCode?: string): Promise<void> {
+    if (!rawCode) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/remove_country &lt;CODE&gt;</code>\nExample: <code>/remove_country RU</code>"
+      );
+      return;
+    }
+
+    const code = rawCode.trim().toUpperCase();
+    const policy = await this.getPolicy();
+    if (!policy.countries || !policy.countries[code]) {
+      await this.client.sendMessage(chatId, `ℹ️ No custom policy found for country: <b>${code}</b>`);
+      return;
+    }
+
+    delete policy.countries[code];
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to remove country rule: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Country Policy Removed!</b>\nCountry: <b>${code}</b>\nDefault threshold (${policy.default.threshold}) now applies to ${code}.`
+    );
+  }
+
+  /**
+   * /allow command: Adds an IP or CIDR to the allowlist
+   */
+  private async executeAllow(chatId: number, rawCidr?: string): Promise<void> {
+    if (!rawCidr) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/allow &lt;IP_or_CIDR&gt;</code>\nExample: <code>/allow 1.1.1.1</code> or <code>/allow 192.168.1.0/24</code>"
+      );
+      return;
+    }
+
+    const cidr = rawCidr.trim();
+    const policy = await this.getPolicy();
+    policy.allowlist = policy.allowlist || [];
+
+    if (policy.allowlist.includes(cidr)) {
+      await this.client.sendMessage(chatId, `ℹ️ <code>${cidr}</code> is already in the allowlist.`);
+      return;
+    }
+
+    policy.allowlist.push(cidr);
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to add to allowlist: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Added to Allowlist!</b>\nEntry: <code>${cidr}</code>\nTotal allowlist entries: <b>${policy.allowlist.length}</b>`
+    );
+  }
+
+  /**
+   * /disallow command: Removes an IP or CIDR from the allowlist
+   */
+  private async executeDisallow(chatId: number, rawCidr?: string): Promise<void> {
+    if (!rawCidr) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/disallow &lt;IP_or_CIDR&gt;</code>\nExample: <code>/disallow 1.1.1.1</code>"
+      );
+      return;
+    }
+
+    const cidr = rawCidr.trim();
+    const policy = await this.getPolicy();
+    policy.allowlist = policy.allowlist || [];
+
+    const idx = policy.allowlist.indexOf(cidr);
+    if (idx === -1) {
+      await this.client.sendMessage(chatId, `ℹ️ <code>${cidr}</code> was not found in the allowlist.`);
+      return;
+    }
+
+    policy.allowlist.splice(idx, 1);
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to remove from allowlist: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Removed from Allowlist!</b>\nEntry: <code>${cidr}</code>\nTotal allowlist entries: <b>${policy.allowlist.length}</b>`
+    );
+  }
+
+  /**
+   * /set_ttl command: Updates automated unban TTL
+   */
+  private async executeSetTtl(chatId: number, rawTtl?: string): Promise<void> {
+    if (!rawTtl) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_ttl &lt;hours|seconds&gt;</code>\nExample: <code>/set_ttl 24h</code> or <code>/set_ttl 12</code>"
+      );
+      return;
+    }
+
+    let seconds = 0;
+    const trimmed = rawTtl.trim().toLowerCase();
+    if (trimmed.endsWith("h")) {
+      const h = parseFloat(trimmed.replace("h", ""));
+      seconds = Math.round(h * 3600);
+    } else if (trimmed.endsWith("d")) {
+      const d = parseFloat(trimmed.replace("d", ""));
+      seconds = Math.round(d * 86400);
+    } else {
+      const num = parseInt(trimmed, 10);
+      seconds = num <= 72 ? num * 3600 : num;
+    }
+
+    if (isNaN(seconds) || seconds <= 0) {
+      await this.client.sendMessage(chatId, "⚠️ Invalid TTL value. Provide hours (e.g. 24h) or seconds.");
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.unban = policy.unban || {};
+    policy.unban.ttlSeconds = seconds;
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update TTL: ${res.error}`);
+      return;
+    }
+
+    const hours = Math.round(seconds / 3600);
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Auto-Unban TTL Updated!</b>\nNew TTL: <b>${hours} Hours</b> (${seconds}s)\nBans older than ${hours}h will be pruned automatically.`
+    );
+  }
+
+  /**
+   * /set_policy command: Uploads raw JSON policy
+   */
+  private async executeSetPolicyJson(chatId: number, rawJson?: string): Promise<void> {
+    if (!rawJson || !rawJson.trim()) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_policy &lt;JSON&gt;</code>\nSend a valid policy JSON string."
+      );
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawJson);
+      const res = await this.savePolicySafely(parsed);
+      if (!res.success) {
+        await this.client.sendMessage(
+          chatId,
+          `❌ <b>Invalid Policy Schema:</b>\n<code>${res.error}</code>`
+        );
+        return;
+      }
+
+      await this.client.sendMessage(
+        chatId,
+        `✅ <b>Full Policy Updated!</b>\nNew policy successfully validated and persisted to KV.`
+      );
+    } catch (err) {
+      await this.client.sendMessage(
+        chatId,
+        `❌ <b>Invalid JSON:</b>\n<code>${(err as Error).message}</code>`
+      );
+    }
   }
 
   /**
@@ -498,7 +906,7 @@ export class TelegramBotHandler {
   }
 
   /**
-   * Handles inline button callback queries (e.g. unban click, menu navigation)
+   * Handles inline button callback queries (e.g. unban click, menu navigation, threshold presets)
    */
   private async handleCallbackQuery(cb: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
     const chatId = cb.message?.chat.id || cb.from.id;
@@ -507,6 +915,32 @@ export class TelegramBotHandler {
 
     if (!this.isAuthorized(userId, chatId)) {
       await this.client.answerCallbackQuery(cb.id, "⛔ Unauthorized action.", true);
+      return;
+    }
+
+    // Quick threshold adjustment presets
+    if (data.startsWith("set_th:")) {
+      const val = parseInt(data.replace("set_th:", ""), 10);
+      if (!isNaN(val) && val > 0) {
+        await this.client.answerCallbackQuery(cb.id, `Threshold set to ${val}!`);
+        const policy = await this.getPolicy();
+        policy.default.threshold = val;
+        await this.savePolicySafely(policy);
+        await this.sendPolicy(chatId, cb.message?.message_id);
+      }
+      return;
+    }
+
+    // Quick window adjustment presets
+    if (data.startsWith("set_win:")) {
+      const val = parseInt(data.replace("set_win:", ""), 10);
+      if (!isNaN(val) && val > 0) {
+        await this.client.answerCallbackQuery(cb.id, `Window set to ${val}s!`);
+        const policy = await this.getPolicy();
+        policy.windowSeconds = val;
+        await this.savePolicySafely(policy);
+        await this.sendPolicy(chatId, cb.message?.message_id);
+      }
       return;
     }
 
@@ -572,7 +1006,7 @@ export class TelegramBotHandler {
         await this.sendList(chatId);
         break;
       case "cmd:policy":
-        await this.sendPolicy(chatId);
+        await this.sendPolicy(chatId, cb.message?.message_id);
         break;
     }
   }

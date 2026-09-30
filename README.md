@@ -219,7 +219,16 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/flush` | Wipes and unbans all currently blocked IPs in 1 bulk request | `/flush` |
 | `/ban <ip> [reason]` | Manually adds an IP to Cloudflare Rules List in real-time | `/ban 198.51.100.4 Scraper bot` |
 | `/unban <ip1> [ip2]` | Removes one or multiple IPs from blocklist in 1 batch | `/unban 198.51.100.4 203.0.113.8` |
-| `/policy` | Displays the active protection policy JSON in formatted code | `/policy` |
+| `/policy` | Displays active policy with 1-click preset buttons | `/policy` |
+| `/set_threshold <n>` | Updates default request limit threshold | `/set_threshold 300` |
+| `/set_window <sec>` | Updates inspection timeframe window | `/set_window 900` |
+| `/set_topn <n>` | Updates Top-N candidate sample size | `/set_topn 50` |
+| `/set_country <C> <n>` | Configures country-specific threshold | `/set_country RU 100` |
+| `/remove_country <C>` | Deletes country override rule | `/remove_country RU` |
+| `/allow <ip/cidr>` | Whitelists an IP or CIDR subnet | `/allow 1.1.1.1` |
+| `/disallow <ip/cidr>` | Removes an IP or CIDR from allowlist | `/disallow 1.1.1.1` |
+| `/set_ttl <hours>` | Updates automated unban TTL | `/set_ttl 24h` |
+| `/set_policy <json>` | Directly sets the full JSON policy | `/set_policy {...}` |
 | `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |
 
