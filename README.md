@@ -216,8 +216,9 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/status` | Live system health, active policy summary, and current banned IP count | `/status` |
 | `/evaluate` | Instantly queries GraphQL Analytics and evaluates live edge traffic | `/evaluate` |
 | `/list` | Shows currently active banned IPs in Cloudflare WAF with unban buttons | `/list` |
+| `/flush` | Wipes and unbans all currently blocked IPs in 1 bulk request | `/flush` |
 | `/ban <ip> [reason]` | Manually adds an IP to Cloudflare Rules List in real-time | `/ban 198.51.100.4 Scraper bot` |
-| `/unban <ip>` | Removes an IP from Cloudflare Rules List and clears local cache | `/unban 198.51.100.4` |
+| `/unban <ip1> [ip2]` | Removes one or multiple IPs from blocklist in 1 batch | `/unban 198.51.100.4 203.0.113.8` |
 | `/policy` | Displays the active protection policy JSON in formatted code | `/policy` |
 | `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |
@@ -287,8 +288,9 @@ If you prefer to configure the command menu manually in **[@BotFather](https://t
 status - System health and active banned IP count
 evaluate - Trigger edge traffic evaluation now
 list - View currently banned IPs in Cloudflare WAF
+flush - Flush and unban all currently blocked IPs
 ban - Manually block an IP: /ban <ip> [reason]
-unban - Remove an IP from blocklist: /unban <ip>
+unban - Remove IP(s) from blocklist: /unban <ip1> [ip2]
 policy - View active threshold and protection policy
 admins - List authorized administrator accounts
 help - Show interactive control panel and menu

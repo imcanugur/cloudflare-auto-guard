@@ -2,7 +2,7 @@
  * Telegram Bot Controller & Interactive Command Handler
  */
 import { TelegramClient } from "@/telegram/client";
-import { TelegramUpdate, TelegramInlineKeyboardMarkup } from "@/telegram/types";
+import { TelegramUpdate, TelegramInlineKeyboardMarkup, TelegramUser } from "@/telegram/types";
 import { CloudflareListsService } from "@/cloudflare/lists";
 import { DecisionEngine } from "@/guard/decision-engine";
 import { Blocker } from "@/guard/blocker";
@@ -107,11 +107,16 @@ export class TelegramBotHandler {
       case "/admins":
         await this.sendAdmins(chatId);
         break;
+      case "/flush":
+      case "/unban_all":
+      case "/clear":
+        await this.executeFlushPrompt(chatId);
+        break;
       case "/ban":
         await this.executeBan(chatId, args[0], args.slice(1).join(" "));
         break;
       case "/unban":
-        await this.executeUnban(chatId, args[0]);
+        await this.executeUnban(chatId, args);
         break;
       default:
         await this.client.sendMessage(
@@ -136,7 +141,8 @@ export class TelegramBotHandler {
       `• /evaluate — Trigger edge GraphQL traffic analysis now\n` +
       `• /list — View currently banned IPs in Cloudflare WAF\n` +
       `• /ban &lt;IP&gt; [reason] — Manually add an IP to the WAF list\n` +
-      `• /unban &lt;IP&gt; — Remove an IP from the WAF blocklist\n` +
+      `• /unban &lt;IP1&gt; [IP2...] — Remove one or multiple IPs at once\n` +
+      `• /flush — Wipe and unban all currently blocked IPs\n` +
       `• /policy — View active threshold and protection policy\n` +
       `• /admins — View authorized administrator accounts\n\n` +
       `<i>Use the quick action buttons below:</i>`;
@@ -203,7 +209,7 @@ export class TelegramBotHandler {
   }
 
   /**
-   * /list command: Displays active banned IPs with quick unban buttons
+   * /list command: Displays active banned IPs with compact buttons and a Flush All action
    */
   private async sendList(chatId: number): Promise<void> {
     if (!this.listId) {
@@ -223,20 +229,32 @@ export class TelegramBotHandler {
     const latestItems = items.slice(-10).reverse();
     let text = `📋 <b>Active Banned IPs (${items.length} total, showing latest ${latestItems.length}):</b>\n\n`;
 
-    const buttons = latestItems.slice(0, 5).map((item) => [
-      { text: `🔓 Unban ${item.ip}`, callback_data: `unban:${item.ip}` }
-    ]);
-
     for (let i = 0; i < latestItems.length; i++) {
       const it = latestItems[i];
       const dateStr = it.created_on ? it.created_on.slice(0, 16).replace("T", " ") : "-";
       text += `${i + 1}. <code>${it.ip}</code>\n   📝 <i>${it.comment || "Auto Guard"}</i>\n   📅 ${dateStr}\n\n`;
     }
 
+    // Pair buttons 2 per row for a clean, compact view
+    const itemButtons: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
+    const maxQuickButtons = Math.min(latestItems.length, 6);
+    for (let i = 0; i < maxQuickButtons; i += 2) {
+      const row: TelegramInlineKeyboardMarkup["inline_keyboard"][0] = [
+        { text: `🔓 ${latestItems[i].ip}`, callback_data: `unban:${latestItems[i].ip}` }
+      ];
+      if (i + 1 < maxQuickButtons) {
+        row.push({ text: `🔓 ${latestItems[i + 1].ip}`, callback_data: `unban:${latestItems[i + 1].ip}` });
+      }
+      itemButtons.push(row);
+    }
+
     const keyboard: TelegramInlineKeyboardMarkup = {
       inline_keyboard: [
-        ...buttons,
-        [{ text: "🔄 Refresh", callback_data: "cmd:list" }]
+        ...itemButtons,
+        [
+          { text: `💥 Flush All (${items.length})`, callback_data: "flush:prompt" },
+          { text: "🔄 Refresh", callback_data: "cmd:list" }
+        ]
       ]
     };
 
@@ -346,11 +364,23 @@ export class TelegramBotHandler {
   }
 
   /**
-   * /unban command: Manual unban execution
+   * /unban command: Supports unbanning single or multiple IPs at once
    */
-  private async executeUnban(chatId: number, ip?: string): Promise<void> {
-    if (!ip) {
-      await this.client.sendMessage(chatId, "⚠️ Usage: <code>/unban &lt;IP&gt;</code>\nExample: <code>/unban 1.2.3.4</code>");
+  private async executeUnban(chatId: number, rawIps?: string[]): Promise<void> {
+    const ips = Array.from(
+      new Set(
+        (rawIps || [])
+          .flatMap((r) => r.split(/[,\s;]+/))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (ips.length === 0) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/unban &lt;IP1&gt; [IP2] ...</code>\nExample: <code>/unban 1.2.3.4 5.6.7.8</code>"
+      );
       return;
     }
 
@@ -361,22 +391,109 @@ export class TelegramBotHandler {
 
     try {
       const items = await this.listsService.getListItems(this.listId);
-      const target = items.find((item) => item.ip === ip);
+      const toDelete = items.filter((item) => ips.includes(item.ip));
 
-      if (!target) {
-        await this.client.sendMessage(chatId, `ℹ️ <code>${ip}</code> was not found in the active blocklist.`);
+      if (toDelete.length === 0) {
+        await this.client.sendMessage(
+          chatId,
+          `ℹ️ None of the specified IP(s) were found in the active blocklist:\n<code>${ips.join(", ")}</code>`
+        );
         return;
       }
 
-      await this.listsService.deleteIpsBatch(this.listId, [target.id]);
-      this.blocker.markAsUnblockedLocally(ip);
+      await this.listsService.deleteIpsBatch(
+        this.listId,
+        toDelete.map((it) => it.id)
+      );
 
+      for (const it of toDelete) {
+        this.blocker.markAsUnblockedLocally(it.ip);
+      }
+
+      const unbannedList = toDelete.map((it) => `• <code>${it.ip}</code>`).join("\n");
       await this.client.sendMessage(
         chatId,
-        `✅ <b>IP Successfully Unbanned!</b>\n<code>${ip}</code> has been removed from Cloudflare WAF list.`
+        `✅ <b>Unbanned ${toDelete.length} IP(s) in 1 Batch!</b>\n\n${unbannedList}\n\n<i>Removed from Cloudflare WAF list.</i>`
       );
     } catch (err) {
       await this.client.sendMessage(chatId, `❌ Unban Failed:\n<code>${(err as Error).message}</code>`);
+    }
+  }
+
+  /**
+   * Prompts admin with a confirmation dialog before wiping the entire blocklist
+   */
+  private async executeFlushPrompt(chatId: number, messageId?: number): Promise<void> {
+    if (!this.listId) {
+      await this.client.sendMessage(chatId, "⚠️ CF_LIST_ID is not configured.");
+      return;
+    }
+
+    const items = await this.listsService.getListItems(this.listId);
+    if (items.length === 0) {
+      await this.client.sendMessage(chatId, "ℹ️ Blocklist is already empty. Nothing to flush.");
+      return;
+    }
+
+    const text =
+      `⚠️ <b>CONFIRMATION REQUIRED: Flush Entire Blocklist</b>\n\n` +
+      `Are you sure you want to remove all <b>${items.length}</b> IPs from the Cloudflare WAF blocklist?\n\n` +
+      `<i>This will immediately restore access for all currently blocked IPs.</i>`;
+
+    const keyboard: TelegramInlineKeyboardMarkup = {
+      inline_keyboard: [
+        [
+          { text: `💥 Yes, Flush All (${items.length})`, callback_data: "flush:confirm" },
+          { text: "❌ Cancel", callback_data: "flush:cancel" }
+        ]
+      ]
+    };
+
+    if (messageId) {
+      await this.client.editMessageText(chatId, messageId, text, { reply_markup: keyboard });
+    } else {
+      await this.client.sendMessage(chatId, text, { reply_markup: keyboard });
+    }
+  }
+
+  /**
+   * Executes bulk deletion of all items in the blocklist
+   */
+  private async executeFlushConfirmed(
+    chatId: number,
+    messageId?: number,
+    user?: TelegramUser
+  ): Promise<void> {
+    if (!this.listId) return;
+
+    try {
+      const items = await this.listsService.getListItems(this.listId);
+      if (items.length === 0) {
+        const text = "ℹ️ Blocklist is already empty.";
+        if (messageId) await this.client.editMessageText(chatId, messageId, text);
+        else await this.client.sendMessage(chatId, text);
+        return;
+      }
+
+      const allIds = items.map((it) => it.id);
+      await this.listsService.deleteIpsBatch(this.listId, allIds);
+      this.blocker.setBlockedList([]);
+
+      const userTag = user ? ` (@${user.username || user.first_name})` : "";
+      const text =
+        `🧹 <b>Blocklist Flushed Successfully!</b>\n\n` +
+        `All <b>${items.length}</b> IPs have been deleted from Cloudflare WAF in 1 bulk request.\n` +
+        `<i>Action executed by${userTag}</i>`;
+
+      if (messageId) {
+        await this.client.editMessageText(chatId, messageId, text);
+      } else {
+        await this.client.sendMessage(chatId, text);
+      }
+    } catch (err) {
+      const text = `❌ <b>Flush Failed:</b> ${(err as Error).message}`;
+      if (messageId) await this.client.editMessageText(chatId, messageId, text);
+      else await this.client.sendMessage(chatId, text);
     }
   }
 
@@ -390,6 +507,28 @@ export class TelegramBotHandler {
 
     if (!this.isAuthorized(userId, chatId)) {
       await this.client.answerCallbackQuery(cb.id, "⛔ Unauthorized action.", true);
+      return;
+    }
+
+    if (data === "flush:prompt") {
+      await this.executeFlushPrompt(chatId, cb.message?.message_id);
+      return;
+    }
+
+    if (data === "flush:confirm") {
+      await this.executeFlushConfirmed(chatId, cb.message?.message_id, cb.from);
+      return;
+    }
+
+    if (data === "flush:cancel") {
+      await this.client.answerCallbackQuery(cb.id, "Flush operation cancelled.");
+      if (cb.message) {
+        await this.client.editMessageText(
+          chatId,
+          cb.message.message_id,
+          "❌ <i>Flush operation cancelled. No changes were made.</i>"
+        );
+      }
       return;
     }
 

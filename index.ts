@@ -177,8 +177,9 @@ export default {
         { command: "status", description: "System health and active banned IP count" },
         { command: "evaluate", description: "Trigger edge traffic evaluation now" },
         { command: "list", description: "View currently banned IPs in Cloudflare WAF" },
+        { command: "flush", description: "Flush and unban all currently blocked IPs" },
         { command: "ban", description: "Manually block an IP: /ban <ip> [reason]" },
-        { command: "unban", description: "Remove an IP from blocklist: /unban <ip>" },
+        { command: "unban", description: "Remove IP(s) from blocklist: /unban <ip1> [ip2]" },
         { command: "policy", description: "View active threshold and protection policy" },
         { command: "admins", description: "List authorized administrator accounts" },
         { command: "help", description: "Show interactive control panel and menu" }
