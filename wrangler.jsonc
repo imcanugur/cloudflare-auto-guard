@@ -8,7 +8,11 @@
   ],
   "vars": {
     "CF_LIST_NAME": "auto_guard_block",
-    "DRY_RUN": "false"
+    "DRY_RUN": "false",
+    "CF_ACCOUNT_ID": "your-cf-account-id",
+    "CF_ZONE_ID": "your-cf-zone-id",
+    "CF_API_TOKEN": "your-api-token",
+    "CF_LIST_ID": "your-list-id"
   },
   "triggers": {
     "crons": [

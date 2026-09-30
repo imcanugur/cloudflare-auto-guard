@@ -86,7 +86,32 @@ export default {
     const url = new URL(request.url);
 
     // 0. Security Guard: Protect admin/mutation routes with GUARD_ADMIN_TOKEN
-    const isPublicHealth = url.pathname === "/health" || url.pathname === "/__guard/health";
+    const isPublicHealth =
+      url.pathname === "/health" ||
+      url.pathname === "/__guard/health" ||
+      url.pathname === "/_debug" ||
+      url.pathname === "/__guard/debug";
+
+    // 0.5. Debug endpoint: Diagnostic check of environment variables presence
+    if (url.pathname === "/_debug" || url.pathname === "/__guard/debug") {
+      return new Response(
+        JSON.stringify(
+          {
+            CF_ACCOUNT_ID: !!env.CF_ACCOUNT_ID,
+            CF_API_TOKEN: !!env.CF_API_TOKEN,
+            CF_LIST_ID: !!env.CF_LIST_ID,
+            CF_ZONE_ID: !!env.CF_ZONE_ID,
+            DRY_RUN: env.DRY_RUN,
+            GUARD_ADMIN_TOKEN: !!env.GUARD_ADMIN_TOKEN,
+            POLICY_KV: !!env.POLICY_KV,
+            allEnvKeys: Object.keys(env || {})
+          },
+          null,
+          2
+        ),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     if (!isPublicHealth) {
       const adminToken = env.GUARD_ADMIN_TOKEN;
