@@ -42,11 +42,14 @@ export class TelegramBotHandler {
   }
 
   /**
-   * Verifies if a Telegram user/chat ID is an authorized administrator
+   * Verifies if a Telegram user/chat ID is an authorized administrator.
+   * Checks both individual sender ID (from.id) and conversation ID (chat.id).
    */
-  private isAuthorized(chatId: number | string): boolean {
+  private isAuthorized(userId?: number | string, chatId?: number | string): boolean {
     if (this.adminChatIds.size === 0) return false;
-    return this.adminChatIds.has(String(chatId));
+    if (userId !== undefined && this.adminChatIds.has(String(userId))) return true;
+    if (chatId !== undefined && this.adminChatIds.has(String(chatId))) return true;
+    return false;
   }
 
   /**
@@ -70,14 +73,13 @@ export class TelegramBotHandler {
    */
   private async handleMessage(message: NonNullable<TelegramUpdate["message"]>): Promise<void> {
     const chatId = message.chat.id;
+    const userId = message.from?.id;
     const text = (message.text || "").trim();
 
-    if (!this.isAuthorized(chatId)) {
+    if (!this.isAuthorized(userId, chatId)) {
       await this.client.sendMessage(
         chatId,
-        "⛔ <b>Unauthorized Access!</b>\nThis bot is strictly restricted to system administrators. Your Chat ID:\n<code>" +
-          chatId +
-          "</code>"
+        `⛔ <b>Unauthorized Access!</b>\nThis bot is strictly restricted to system administrators.\nYour User ID: <code>${userId || chatId}</code>\nChat ID: <code>${chatId}</code>`
       );
       return;
     }
@@ -101,6 +103,9 @@ export class TelegramBotHandler {
         break;
       case "/policy":
         await this.sendPolicy(chatId);
+        break;
+      case "/admins":
+        await this.sendAdmins(chatId);
         break;
       case "/ban":
         await this.executeBan(chatId, args[0], args.slice(1).join(" "));
@@ -132,7 +137,8 @@ export class TelegramBotHandler {
       `• /list — View currently banned IPs in Cloudflare WAF\n` +
       `• /ban &lt;IP&gt; [reason] — Manually add an IP to the WAF list\n` +
       `• /unban &lt;IP&gt; — Remove an IP from the WAF blocklist\n` +
-      `• /policy — View active threshold and protection policy\n\n` +
+      `• /policy — View active threshold and protection policy\n` +
+      `• /admins — View authorized administrator accounts\n\n` +
       `<i>Use the quick action buttons below:</i>`;
 
     const keyboard: TelegramInlineKeyboardMarkup = {
@@ -170,6 +176,7 @@ export class TelegramBotHandler {
       `📊 <b>Auto Guard System Status</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🟢 <b>Status:</b> Active & Guarding\n` +
+      `👥 <b>Authorized Admins:</b> <b>${this.adminChatIds.size}</b>\n` +
       `🌐 <b>Zone ID:</b> <code>${this.zoneId || "Not Configured"}</code>\n` +
       `📋 <b>WAF List ID:</b> <code>${this.listId || "Not Configured"}</code>\n` +
       `🚫 <b>Active Banned IPs:</b> <b>${itemCount}</b> / 10,000\n` +
@@ -292,6 +299,18 @@ export class TelegramBotHandler {
   }
 
   /**
+   * /admins command: Displays authorized administrator accounts
+   */
+  private async sendAdmins(chatId: number): Promise<void> {
+    const list = Array.from(this.adminChatIds);
+    const formatted = list.map((id, idx) => `${idx + 1}. <code>${id}</code>`).join("\n");
+    await this.client.sendMessage(
+      chatId,
+      `👥 <b>Authorized Administrators (${list.length} total):</b>\n\n${formatted}\n\n<i>To add more admins, configure TELEGRAM_ADMIN_CHAT_ID (e.g. ID1,ID2,ID3) in wrangler secrets.</i>`
+    );
+  }
+
+  /**
    * /ban command: Manual block execution
    */
   private async executeBan(chatId: number, ip?: string, reason?: string): Promise<void> {
@@ -366,9 +385,10 @@ export class TelegramBotHandler {
    */
   private async handleCallbackQuery(cb: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
     const chatId = cb.message?.chat.id || cb.from.id;
+    const userId = cb.from.id;
     const data = cb.data || "";
 
-    if (!this.isAuthorized(chatId)) {
+    if (!this.isAuthorized(userId, chatId)) {
       await this.client.answerCallbackQuery(cb.id, "⛔ Unauthorized action.", true);
       return;
     }

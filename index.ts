@@ -82,7 +82,7 @@ function createServices(env: Env) {
 
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN || "");
   const adminChatIds = (env.TELEGRAM_ADMIN_CHAT_ID || "")
-    .split(",")
+    .split(/[,\s;]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 

@@ -219,6 +219,7 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/ban <ip> [reason]` | Manually adds an IP to Cloudflare Rules List in real-time | `/ban 198.51.100.4 Scraper bot` |
 | `/unban <ip>` | Removes an IP from Cloudflare Rules List and clears local cache | `/unban 198.51.100.4` |
 | `/policy` | Displays the active protection policy JSON in formatted code | `/policy` |
+| `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |
 
 ---
@@ -258,13 +259,17 @@ Whenever the automated cron detects high-frequency attacks or policy violations,
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 # Paste your BotFather token when prompted
 
-# Save your Telegram Admin Chat ID (comma-separated for multiple admins: 12345,67890)
+# Save your Telegram Admin Chat IDs (supports multiple user IDs and group IDs)
+# Format: comma, space, or semicolon separated: "12345678, 87654321, -1001234567890"
 npx wrangler secret put TELEGRAM_ADMIN_CHAT_ID
-# Paste your user ID when prompted
+# Paste your user/group IDs when prompted
 
 # Deploy your Worker
 npx wrangler deploy
 ```
+
+> **Multi-Admin & Group Support**:  
+> You can pass multiple individual user IDs (e.g. `11111,22222`) or an entire **Telegram Group / Channel ID** (e.g. `-1001234567890`). All admins receive real-time alerts simultaneously, and any authorized admin can run commands or click the inline unban button.
 
 #### Step 3: Register Webhook in One Click
 Open the setup endpoint in your browser or curl:
