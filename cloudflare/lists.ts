@@ -20,31 +20,36 @@ export class CloudflareListsService {
     ip: string,
     comment = "Auto Guard Block"
   ): Promise<CloudflareListOperationResult | null> {
+    return this.addIpsBatch(listId, [{ ip, comment }]);
+  }
+
+  /**
+   * Adds multiple IPs in bulk (Batch) to a Cloudflare IP List in a single HTTP request
+   */
+  public async addIpsBatch(
+    listId: string,
+    items: Array<{ ip: string; comment?: string }>
+  ): Promise<CloudflareListOperationResult | null> {
+    if (items.length === 0) return null;
+
     const accountId = this.client.getAccountId();
     const endpoint = `/accounts/${accountId}/rules/lists/${listId}/items`;
-
-    const payload = [
-      {
-        ip,
-        comment
-      }
-    ];
 
     try {
       const result = await this.client.request<CloudflareListOperationResult>(endpoint, {
         method: "POST",
-        body: JSON.stringify(payload)
+        body: JSON.stringify(items)
       });
 
-      logger.info("CLOUDFLARE_LIST_ITEM_ADDED", {
-        ip,
+      logger.info("CLOUDFLARE_LIST_BATCH_ADDED", {
+        count: items.length,
         metadata: { listId, operationId: result?.operation_id }
       });
 
       return result;
     } catch (err) {
-      logger.error("CLOUDFLARE_LIST_ITEM_ADD_FAILED", {
-        ip,
+      logger.error("CLOUDFLARE_LIST_BATCH_FAILED", {
+        count: items.length,
         message: (err as Error).message,
         metadata: { listId }
       });

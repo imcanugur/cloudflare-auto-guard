@@ -45,6 +45,7 @@ export class DecisionEngine {
     metrics.increment("top_n_candidates", candidates.length);
 
     const decisions: GuardDecision[] = [];
+    const toBlock: GuardDecision[] = [];
 
     // 3. Evaluate each candidate against the resolved country policy
     for (const candidate of candidates) {
@@ -62,12 +63,17 @@ export class DecisionEngine {
       });
 
       if (decision.action === "BLOCK") {
-        const executed = await this.blocker.executeBlock(decision);
-        decisions.push(executed);
+        toBlock.push(decision);
       } else {
         metrics.increment("ignored_ips");
         decisions.push(decision);
       }
+    }
+
+    // 4. Execute all blocks in a single batch API call (prevents subrequest limit errors)
+    if (toBlock.length > 0) {
+      const executedBlocks = await this.blocker.executeBlockBatch(toBlock);
+      decisions.push(...executedBlocks);
     }
 
     return decisions;

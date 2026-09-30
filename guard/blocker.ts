@@ -1,5 +1,5 @@
 /**
- * Blocker: Handles Cloudflare IP List mutation, dry-run, idempotency, and audit logging
+ * Blocker: Enforces block decisions via Cloudflare Lists API with batching, deduplication, and failure isolation
  */
 import { GuardDecision, DecisionReason } from "@/domain/models/decision";
 import { CloudflareListsService } from "@/cloudflare/lists";
@@ -7,8 +7,17 @@ import { logger } from "@/observability/logger";
 import { metrics } from "@/observability/metrics";
 
 export interface BlockerConfig {
-  listId?: string | undefined;
-  dryRun?: boolean | undefined;
+  listId?: string;
+  dryRun?: boolean;
+}
+
+function formatComment(decision: GuardDecision): string {
+  const { country, asn, requestCount, rank, threshold, windowSeconds } = decision;
+  const windowMinutes = Math.max(1, Math.round((windowSeconds || 3600) / 60));
+  const windowStr = windowMinutes >= 60 ? `${Math.round(windowMinutes / 60)}h` : `${windowMinutes}m`;
+  const dateStr = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const asnStr = asn ? ` | ASN: ${asn.slice(0, 24).trim()}` : "";
+  return `Auto Guard: ${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;
 }
 
 export class Blocker {
@@ -57,94 +66,118 @@ export class Blocker {
     }
   }
 
+  /**
+   * Executes a single block decision
+   */
   public async executeBlock(decision: GuardDecision): Promise<GuardDecision> {
-    const { ip, country, asn, requestCount, rank, threshold, windowSeconds } = decision;
+    const results = await this.executeBlockBatch([decision]);
+    return results[0] ?? decision;
+  }
 
-    const windowMinutes = Math.max(1, Math.round((windowSeconds || 3600) / 60));
-    const windowStr = windowMinutes >= 60 ? `${Math.round(windowMinutes / 60)}h` : `${windowMinutes}m`;
-    const dateStr = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
-    const asnStr = asn ? ` | ASN: ${asn.slice(0, 24).trim()}` : "";
-    const comment = `Auto Guard: ${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;
+  /**
+   * Executes bulk block decisions in a single API call (Batch) to avoid subrequest limits
+   */
+  public async executeBlockBatch(decisions: GuardDecision[]): Promise<GuardDecision[]> {
+    if (decisions.length === 0) return [];
 
-    // Dry-run mode handling
+    // Filter out any that were already marked in cache during the cycle
+    const unblockedDecisions = decisions.filter((d) => !this.isAlreadyBlocked(d.ip));
+    if (unblockedDecisions.length === 0) {
+      return decisions.map((d) => ({
+        ...d,
+        action: "IGNORE",
+        reason: DecisionReason.ALREADY_BLOCKED
+      }));
+    }
+
+    // 1. Dry-run mode
     if (this.dryRun) {
-      logger.info("WOULD_BLOCK", {
-        ip,
-        country,
-        asn,
-        requests: requestCount,
-        rank,
-        threshold,
-        comment,
-        action: "BLOCK",
-        reason: "DRY_RUN_POLICY_MATCH"
-      });
-      metrics.increment("blocked_ips");
-      this.markBlockedLocal(ip);
-      return decision;
+      for (const d of unblockedDecisions) {
+        const comment = formatComment(d);
+        logger.info("WOULD_BLOCK", {
+          ip: d.ip,
+          country: d.country,
+          asn: d.asn,
+          requests: d.requestCount,
+          rank: d.rank,
+          threshold: d.threshold,
+          comment,
+          action: "BLOCK",
+          reason: "DRY_RUN_POLICY_MATCH"
+        });
+        metrics.increment("blocked_ips");
+        this.markBlockedLocal(d.ip);
+      }
+      return decisions;
     }
 
     if (!this.listsService || !this.listId) {
       logger.warn("BLOCK_SKIPPED_NO_CLOUDFLARE_CONFIG", {
-        ip,
-        country,
+        count: unblockedDecisions.length,
         message: "Cloudflare Lists API credentials or listId not configured"
       });
-      return decision;
+      return decisions;
     }
 
+    // 2. Prepare bulk payload (up to 1,000 items in ONE HTTP request)
+    const payload = unblockedDecisions.map((d) => ({
+      ip: d.ip,
+      comment: formatComment(d)
+    }));
+
     try {
-      // Mutate Cloudflare IP list
-      await this.listsService.addIpToList(
-        this.listId,
-        ip,
-        comment
-      );
+      if (typeof this.listsService.addIpsBatch === "function") {
+        await this.listsService.addIpsBatch(this.listId, payload);
+      } else {
+        for (const item of payload) {
+          await this.listsService.addIpToList(this.listId, item.ip, item.comment);
+        }
+      }
 
-      this.markBlockedLocal(ip);
+      for (const d of unblockedDecisions) {
+        this.markBlockedLocal(d.ip);
+        logger.info("GUARD_DECISION", {
+          ip: d.ip,
+          country: d.country,
+          asn: d.asn,
+          requests: d.requestCount,
+          rank: d.rank,
+          threshold: d.threshold,
+          comment: formatComment(d),
+          action: "BLOCK",
+          reason: DecisionReason.POLICY_MATCH
+        });
+        metrics.increment("blocked_ips");
+      }
 
-      logger.info("GUARD_DECISION", {
-        ip,
-        country,
-        asn,
-        requests: requestCount,
-        rank,
-        threshold,
-        comment,
-        action: "BLOCK",
-        reason: DecisionReason.POLICY_MATCH
-      });
-
-      metrics.increment("blocked_ips");
-      return decision;
+      return decisions;
     } catch (err) {
       const msg = (err as Error).message.toLowerCase();
+
+      // Gracefully handle duplicate items error from Cloudflare
       if (
         msg.includes("duplicate") ||
         msg.includes("already exists") ||
         msg.includes("10002") ||
         msg.includes("10008")
       ) {
-        this.markBlockedLocal(ip);
-        logger.info("IP_ALREADY_EXISTS_IN_LIST", { ip, country });
-        return {
-          ...decision,
-          action: "IGNORE",
-          reason: DecisionReason.ALREADY_BLOCKED
-        };
+        for (const d of unblockedDecisions) {
+          this.markBlockedLocal(d.ip);
+        }
+        logger.info("IP_BATCH_CONTAINED_EXISTING_ITEMS", { count: unblockedDecisions.length });
+        return decisions;
       }
 
       metrics.increment("cloudflare_api_errors");
-      logger.error("BLOCK_EXECUTION_FAILED", {
-        ip,
-        country,
+      logger.error("BLOCK_BATCH_EXECUTION_FAILED", {
+        count: unblockedDecisions.length,
         message: (err as Error).message
       });
 
-      return {
-        ...decision,
+      return decisions.map((d) => ({
+        ...d,
         reason: DecisionReason.BLOCK_FAILED
-      };
+      }));
     }
   }
 }
