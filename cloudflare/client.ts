@@ -55,23 +55,28 @@ export class CloudflareApiClient {
           );
         }
 
+        const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+
         if (!response.ok) {
           metrics.increment("cloudflare_api_errors");
-          let body: unknown;
-          try {
-            body = await response.json();
-          } catch {
-            body = await response.text();
+          let errorDetail = "";
+          if (data && typeof data === "object" && "errors" in data) {
+            const errList = (data as { errors?: Array<{ message?: string }> }).errors;
+            if (Array.isArray(errList) && errList.length > 0) {
+              errorDetail = ": " + errList.map((e) => e.message || JSON.stringify(e)).join("; ");
+            }
           }
 
           throw new CloudflareApiError(
-            `Cloudflare API request failed with status ${response.status}`,
+            `Cloudflare API request failed with status ${response.status}${errorDetail}`,
             response.status,
-            body
+            data
           );
         }
 
-        const data = (await response.json()) as Record<string, unknown>;
+        if (!data) {
+          return null as unknown as T;
+        }
 
         // GraphQL endpoints return { data, errors }
         if (data["data"] !== undefined) {
@@ -92,6 +97,79 @@ export class CloudflareApiClient {
         }
 
         return restData.result;
+      },
+      {
+        maxRetries: this.maxRetries,
+        shouldRetry: (error) => {
+          if (error instanceof CloudflareApiError) {
+            const status = error.statusCode;
+            const isTransient = status === 429 || (status >= 500 && status <= 504);
+            if (isTransient) {
+              metrics.increment("cloudflare_api_retries");
+              return true;
+            }
+          }
+          return false;
+        }
+      }
+    );
+  }
+
+  /**
+   * Executes a Cloudflare API request and returns the full CloudflareApiResponse envelope (including result_info / cursors)
+   */
+  public async requestEnvelope<T>(
+    path: string,
+    init: RequestInit = {}
+  ): Promise<CloudflareApiResponse<T>> {
+    const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${this.apiToken}`);
+    headers.set("Content-Type", "application/json");
+
+    return withRetry(
+      async () => {
+        let response: Response;
+        try {
+          response = await fetch(url, {
+            ...init,
+            headers
+          });
+        } catch (fetchErr) {
+          metrics.increment("cloudflare_api_errors");
+          throw new CloudflareApiError(
+            `Network error contacting Cloudflare API: ${(fetchErr as Error).message}`,
+            503
+          );
+        }
+
+        const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+
+        if (!response.ok) {
+          metrics.increment("cloudflare_api_errors");
+          let errorDetail = "";
+          if (data && typeof data === "object" && "errors" in data) {
+            const errList = (data as { errors?: Array<{ message?: string }> }).errors;
+            if (Array.isArray(errList) && errList.length > 0) {
+              errorDetail = ": " + errList.map((e) => e.message || JSON.stringify(e)).join("; ");
+            }
+          }
+
+          throw new CloudflareApiError(
+            `Cloudflare API request failed with status ${response.status}${errorDetail}`,
+            response.status,
+            data
+          );
+        }
+
+        const restData = (data || {}) as unknown as CloudflareApiResponse<T>;
+        if (!restData.success) {
+          metrics.increment("cloudflare_api_errors");
+          const errorMsg = restData.errors?.[0]?.message || "Unknown Cloudflare API error";
+          throw new CloudflareApiError(errorMsg, 400, restData);
+        }
+
+        return restData;
       },
       {
         maxRetries: this.maxRetries,

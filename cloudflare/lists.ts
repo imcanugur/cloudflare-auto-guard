@@ -58,23 +58,44 @@ export class CloudflareListsService {
   }
 
   /**
-   * Fetches existing items in the Cloudflare IP List (used for initial idempotency cache warming)
+   * Fetches existing items in the Cloudflare IP List (used for initial idempotency cache warming & TTL pruning)
+   * Uses Cloudflare cursor-based pagination with valid per_page (max 500) within worker subrequest budget.
    */
-  public async getListItems(listId: string): Promise<CloudflareListItem[]> {
+  public async getListItems(listId: string, maxItems = 10000): Promise<CloudflareListItem[]> {
     const accountId = this.client.getAccountId();
-    const endpoint = `/accounts/${accountId}/rules/lists/${listId}/items?per_page=1000`;
+    const allItems: CloudflareListItem[] = [];
+    let cursor: string | undefined = undefined;
+    let pageCount = 0;
+    const maxPages = 15;
 
     try {
-      const items = await this.client.request<CloudflareListItem[]>(endpoint, {
-        method: "GET"
-      });
-      return items || [];
+      while (pageCount < maxPages) {
+        let endpoint = `/accounts/${accountId}/rules/lists/${listId}/items?per_page=500`;
+        if (cursor) {
+          endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+        }
+
+        const envelope = await this.client.requestEnvelope<CloudflareListItem[]>(endpoint, {
+          method: "GET"
+        });
+
+        const items = envelope.result || [];
+        allItems.push(...items);
+        pageCount++;
+
+        cursor = envelope.result_info?.cursors?.after;
+        if (!cursor || items.length === 0 || allItems.length >= maxItems) {
+          break;
+        }
+      }
+
+      return allItems;
     } catch (err) {
       logger.warn("CLOUDFLARE_LIST_FETCH_ITEMS_FAILED", {
         message: (err as Error).message,
         metadata: { listId }
       });
-      return [];
+      return allItems;
     }
   }
 

@@ -21,10 +21,14 @@ export interface CloudflareApiResponse<T> {
   errors: Array<{ code: number; message: string }>;
   messages: Array<{ code: number; message: string }>;
   result_info?: {
-    page: number;
-    per_page: number;
-    count: number;
-    total_count: number;
+    page?: number;
+    per_page?: number;
+    count?: number;
+    total_count?: number;
+    cursors?: {
+      before?: string;
+      after?: string;
+    };
   };
 }
 
