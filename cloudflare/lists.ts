@@ -77,4 +77,42 @@ export class CloudflareListsService {
       return [];
     }
   }
+
+  /**
+   * Deletes multiple items by ID from Cloudflare IP List in a single batch request
+   */
+  public async deleteIpsBatch(
+    listId: string,
+    itemIds: string[]
+  ): Promise<CloudflareListOperationResult | null> {
+    if (itemIds.length === 0) return null;
+
+    const accountId = this.client.getAccountId();
+    const endpoint = `/accounts/${accountId}/rules/lists/${listId}/items`;
+
+    const payload = {
+      items: itemIds.map((id) => ({ id }))
+    };
+
+    try {
+      const result = await this.client.request<CloudflareListOperationResult>(endpoint, {
+        method: "DELETE",
+        body: JSON.stringify(payload)
+      });
+
+      logger.info("CLOUDFLARE_LIST_ITEMS_DELETED", {
+        count: itemIds.length,
+        metadata: { listId, operationId: result?.operation_id }
+      });
+
+      return result;
+    } catch (err) {
+      logger.error("CLOUDFLARE_LIST_DELETE_FAILED", {
+        count: itemIds.length,
+        message: (err as Error).message,
+        metadata: { listId }
+      });
+      throw err;
+    }
+  }
 }

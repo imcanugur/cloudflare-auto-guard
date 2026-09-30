@@ -37,8 +37,15 @@ export class DecisionEngine {
     const windowSeconds = policy.windowSeconds ?? 300;
     const topN = policy.topN ?? 100;
 
-    // 1. Sync existing blocked IPs from Cloudflare List for 100% idempotency
-    await this.blocker.syncExistingList();
+    // 1. Sync existing blocked IPs and prune expired/stale bans (TTL & 10k limit protection)
+    const unbanConfig = policy.unban;
+    if (unbanConfig?.enabled !== false) {
+      const ttl = unbanConfig?.ttlSeconds ?? 86400;
+      const maxLimit = unbanConfig?.maxListSize ?? 9000;
+      await this.blocker.pruneExpiredItems(ttl, maxLimit);
+    } else {
+      await this.blocker.syncExistingList();
+    }
 
     // 2. Fetch real edge Top-N IP statistics directly from Cloudflare GraphQL Analytics
     const candidates = await this.analyticsService.fetchTopIps(zoneId, windowSeconds, topN);

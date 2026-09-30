@@ -21,13 +21,20 @@ export const CountryRuleSchema = z.object({
   topN: z.number().int().positive().optional()
 });
 
+export const UnbanPolicySchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  ttlSeconds: z.number().int().positive().optional().default(86400),
+  maxListSize: z.number().int().positive().optional().default(9000)
+}).optional();
+
 export const GuardPolicySchema = z.object({
   enabled: z.boolean().default(true),
   windowSeconds: z.number().int().positive().optional().default(300),
   topN: z.number().int().positive().optional().default(100),
   default: DefaultRuleSchema,
   countries: z.record(z.string(), CountryRuleSchema).optional().default({}),
-  allowlist: z.array(z.string()).optional().default([])
+  allowlist: z.array(z.string()).optional().default([]),
+  unban: UnbanPolicySchema
 });
 
 export type ValidatedGuardPolicy = z.infer<typeof GuardPolicySchema>;

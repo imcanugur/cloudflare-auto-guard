@@ -67,6 +67,77 @@ export class Blocker {
   }
 
   /**
+   * Automatically unbans expired IPs and enforces the max list size limit (FIFO pruning)
+   */
+  public async pruneExpiredItems(ttlSeconds = 86400, maxListSize = 9000): Promise<number> {
+    if (!this.listsService || !this.listId) return 0;
+
+    try {
+      const items = await this.listsService.getListItems(this.listId);
+      const now = Date.now();
+      const toDeleteIds: string[] = [];
+      const toDeleteIps: string[] = [];
+      const activeItems: typeof items = [];
+
+      for (const item of items) {
+        if (!item || !item.id || !item.ip) continue;
+        this.blockedCache.add(item.ip);
+
+        // Check if item has exceeded TTL
+        const createdTime = item.created_on ? new Date(item.created_on).getTime() : 0;
+        const isExpired = createdTime > 0 && now - createdTime > ttlSeconds * 1000;
+
+        if (isExpired) {
+          toDeleteIds.push(item.id);
+          toDeleteIps.push(item.ip);
+        } else {
+          activeItems.push(item);
+        }
+      }
+
+      // 10k Limit Safeguard: If remaining active items exceed maxListSize, prune oldest first
+      if (activeItems.length > maxListSize) {
+        activeItems.sort((a, b) => {
+          const tA = a.created_on ? new Date(a.created_on).getTime() : 0;
+          const tB = b.created_on ? new Date(b.created_on).getTime() : 0;
+          return tA - tB;
+        });
+
+        const overflowCount = activeItems.length - maxListSize;
+        const overflowItems = activeItems.slice(0, overflowCount);
+        for (const item of overflowItems) {
+          toDeleteIds.push(item.id);
+          toDeleteIps.push(item.ip);
+        }
+      }
+
+      // Execute bulk deletion in a single API call
+      if (toDeleteIds.length > 0) {
+        await this.listsService.deleteIpsBatch(this.listId, toDeleteIds);
+
+        // Remove unbanned IPs from in-memory cache
+        for (const ip of toDeleteIps) {
+          this.blockedCache.delete(ip);
+        }
+
+        logger.info("AUTO_UNBAN_PRUNED", {
+          expiredCount: toDeleteIds.length,
+          remainingCount: items.length - toDeleteIds.length
+        });
+        metrics.increment("unbanned_ips", toDeleteIds.length);
+        return toDeleteIds.length;
+      }
+
+      return 0;
+    } catch (err) {
+      logger.warn("PRUNE_EXPIRED_ITEMS_FAILED", {
+        message: (err as Error).message
+      });
+      return 0;
+    }
+  }
+
+  /**
    * Executes a single block decision
    */
   public async executeBlock(decision: GuardDecision): Promise<GuardDecision> {

@@ -30,5 +30,10 @@
       "threshold": 1000,
       "action": "block"
     }
+  },
+  "unban": {
+    "enabled": true,
+    "ttlSeconds": 86400,
+    "maxListSize": 9000
   }
 }

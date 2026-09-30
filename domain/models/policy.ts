@@ -18,6 +18,12 @@ export interface CountryPolicyRule {
   topN?: number;
 }
 
+export interface UnbanPolicyConfig {
+  enabled?: boolean;
+  ttlSeconds?: number;
+  maxListSize?: number;
+}
+
 export interface GuardPolicy {
   enabled: boolean;
   windowSeconds?: number;
@@ -25,6 +31,7 @@ export interface GuardPolicy {
   default: DefaultPolicyRule;
   countries?: Record<string, CountryPolicyRule>;
   allowlist?: string[];
+  unban?: UnbanPolicyConfig;
 }
 
 export interface ResolvedPolicy {
