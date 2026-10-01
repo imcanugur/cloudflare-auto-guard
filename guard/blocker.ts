@@ -11,6 +11,13 @@ export interface BlockerConfig {
   dryRun?: boolean;
 }
 
+export interface PrunedUnbanItem {
+  ip: string;
+  reason: "TTL_EXPIRED" | "LIST_LIMIT_FIFO";
+  createdOn?: string;
+  comment?: string;
+}
+
 function formatComment(decision: GuardDecision): string {
   const { country, asn, requestCount, rank, threshold, windowSeconds } = decision;
   const windowMinutes = Math.max(1, Math.round((windowSeconds || 3600) / 60));
@@ -81,14 +88,17 @@ export class Blocker {
   /**
    * Automatically unbans expired IPs and enforces the max list size limit (FIFO pruning)
    */
-  public async pruneExpiredItems(ttlSeconds = 86400, maxListSize = 9000): Promise<number> {
-    if (!this.listsService || !this.listId) return 0;
+  public async pruneExpiredItems(
+    ttlSeconds = 86400,
+    maxListSize = 9000
+  ): Promise<PrunedUnbanItem[]> {
+    if (!this.listsService || !this.listId) return [];
 
     try {
       const items = await this.listsService.getListItems(this.listId);
       const now = Date.now();
       const toDeleteIds: string[] = [];
-      const toDeleteIps: string[] = [];
+      const unbannedItems: PrunedUnbanItem[] = [];
       const activeItems: typeof items = [];
 
       for (const item of items) {
@@ -101,7 +111,12 @@ export class Blocker {
 
         if (isExpired) {
           toDeleteIds.push(item.id);
-          toDeleteIps.push(item.ip);
+          unbannedItems.push({
+            ip: item.ip,
+            reason: "TTL_EXPIRED",
+            createdOn: item.created_on,
+            comment: item.comment
+          });
         } else {
           activeItems.push(item);
         }
@@ -119,7 +134,12 @@ export class Blocker {
         const overflowItems = activeItems.slice(0, overflowCount);
         for (const item of overflowItems) {
           toDeleteIds.push(item.id);
-          toDeleteIps.push(item.ip);
+          unbannedItems.push({
+            ip: item.ip,
+            reason: "LIST_LIMIT_FIFO",
+            createdOn: item.created_on,
+            comment: item.comment
+          });
         }
       }
 
@@ -128,8 +148,8 @@ export class Blocker {
         await this.listsService.deleteIpsBatch(this.listId, toDeleteIds);
 
         // Remove unbanned IPs from in-memory cache
-        for (const ip of toDeleteIps) {
-          this.blockedCache.delete(ip);
+        for (const unbanned of unbannedItems) {
+          this.blockedCache.delete(unbanned.ip);
         }
 
         logger.info("AUTO_UNBAN_PRUNED", {
@@ -137,15 +157,15 @@ export class Blocker {
           remainingCount: items.length - toDeleteIds.length
         });
         metrics.increment("unbanned_ips", toDeleteIds.length);
-        return toDeleteIds.length;
+        return unbannedItems;
       }
 
-      return 0;
+      return [];
     } catch (err) {
       logger.warn("PRUNE_EXPIRED_ITEMS_FAILED", {
         message: (err as Error).message
       });
-      return 0;
+      return [];
     }
   }
 

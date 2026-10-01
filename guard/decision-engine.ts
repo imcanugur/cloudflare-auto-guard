@@ -6,13 +6,18 @@ import { GuardDecision } from "@/domain/models/decision";
 import { CloudflareAnalyticsService } from "@/cloudflare/analytics";
 import { AllowlistMatcher } from "@/security/allowlist";
 import { CandidateEvaluator } from "@/guard/evaluator";
-import { Blocker } from "@/guard/blocker";
+import { Blocker, PrunedUnbanItem } from "@/guard/blocker";
 import { metrics } from "@/observability/metrics";
 
 export interface DecisionEngineOptions {
   analyticsService: CloudflareAnalyticsService;
   blocker: Blocker;
   allowlistMatcher: AllowlistMatcher;
+}
+
+export interface EvaluationResult {
+  decisions: GuardDecision[];
+  unbanned: PrunedUnbanItem[];
 }
 
 export class DecisionEngine {
@@ -29,20 +34,21 @@ export class DecisionEngine {
   /**
    * Fetches top traffic candidates from Cloudflare Analytics and evaluates against active policy
    */
-  public async evaluateCandidates(policy: GuardPolicy, zoneId: string): Promise<GuardDecision[]> {
+  public async evaluateCandidates(policy: GuardPolicy, zoneId: string): Promise<EvaluationResult> {
     if (!policy.enabled || !zoneId) {
-      return [];
+      return { decisions: [], unbanned: [] };
     }
 
     const windowSeconds = policy.windowSeconds ?? 300;
     const topN = policy.topN ?? 100;
 
     // 1. Sync existing blocked IPs and prune expired/stale bans (TTL & 10k limit protection)
+    let unbanned: PrunedUnbanItem[] = [];
     const unbanConfig = policy.unban;
     if (unbanConfig?.enabled !== false) {
       const ttl = unbanConfig?.ttlSeconds ?? 86400;
       const maxLimit = unbanConfig?.maxListSize ?? 9000;
-      await this.blocker.pruneExpiredItems(ttl, maxLimit);
+      unbanned = await this.blocker.pruneExpiredItems(ttl, maxLimit);
     } else {
       await this.blocker.syncExistingList();
     }
@@ -83,6 +89,6 @@ export class DecisionEngine {
       decisions.push(...executedBlocks);
     }
 
-    return decisions;
+    return { decisions, unbanned };
   }
 }

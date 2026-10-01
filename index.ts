@@ -327,10 +327,15 @@ export default {
         );
       }
 
-      const decisions = await decisionEngine.evaluateCandidates(activePolicy, zoneId);
+      const { decisions, unbanned } = await decisionEngine.evaluateCandidates(activePolicy, zoneId);
 
-      // Push real-time alert to Telegram admins if threats were blocked
-      ctx.waitUntil(telegramBot.notifyBannedIps(decisions));
+      // Push real-time alert to Telegram admins for blocked threats & unbanned IPs
+      ctx.waitUntil(
+        Promise.all([
+          telegramBot.notifyBannedIps(decisions),
+          telegramBot.notifyUnbannedIps(unbanned)
+        ])
+      );
 
       return new Response(
         JSON.stringify(
@@ -338,6 +343,8 @@ export default {
             status: "success",
             zoneId,
             evaluated: decisions.length,
+            unbannedCount: unbanned.length,
+            unbanned,
             decisions
           },
           null,
@@ -396,8 +403,11 @@ export default {
     ctx.waitUntil(
       decisionEngine
         .evaluateCandidates(activePolicy, zoneId)
-        .then((decisions) => {
-          return telegramBot.notifyBannedIps(decisions);
+        .then(({ decisions, unbanned }) => {
+          return Promise.all([
+            telegramBot.notifyBannedIps(decisions),
+            telegramBot.notifyUnbannedIps(unbanned)
+          ]);
         })
         .catch((err) => {
           logger.error("SCHEDULED_EVALUATION_FAILED", {

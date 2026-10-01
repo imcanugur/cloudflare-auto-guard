@@ -5,7 +5,7 @@ import { TelegramClient } from "@/telegram/client";
 import { TelegramUpdate, TelegramInlineKeyboardMarkup, TelegramUser } from "@/telegram/types";
 import { CloudflareListsService } from "@/cloudflare/lists";
 import { DecisionEngine } from "@/guard/decision-engine";
-import { Blocker } from "@/guard/blocker";
+import { Blocker, PrunedUnbanItem } from "@/guard/blocker";
 import { GuardPolicy } from "@/domain/models/policy";
 import { GuardDecision } from "@/domain/models/decision";
 import { safeValidatePolicy } from "@/config/policy-schema";
@@ -336,7 +336,7 @@ export class TelegramBotHandler {
 
     try {
       const policy = await this.getPolicy();
-      const decisions = await this.decisionEngine.evaluateCandidates(policy, this.zoneId);
+      const { decisions, unbanned } = await this.decisionEngine.evaluateCandidates(policy, this.zoneId);
 
       const blocked = decisions.filter((d) => d.action === "BLOCK");
       const ignored = decisions.filter((d) => d.action === "IGNORE");
@@ -345,7 +345,20 @@ export class TelegramBotHandler {
         `⚡ <b>Evaluation Completed!</b>\n\n` +
         `📊 <b>Analyzed Candidates:</b> ${decisions.length}\n` +
         `🚫 <b>Newly Blocked:</b> ${blocked.length}\n` +
+        `🔓 <b>Auto-Unbanned:</b> ${unbanned.length}\n` +
         `✅ <b>Clean / Ignored:</b> ${ignored.length}\n\n`;
+
+      if (unbanned.length > 0) {
+        report += `<b>Auto-Unbanned IPs (TTL / FIFO):</b>\n`;
+        for (const u of unbanned.slice(0, 10)) {
+          const reasonLabel = u.reason === "TTL_EXPIRED" ? "TTL Expired" : "FIFO Overflow";
+          report += `• <code>${u.ip}</code> <i>(${reasonLabel})</i>\n`;
+        }
+        if (unbanned.length > 10) {
+          report += `<i>...and ${unbanned.length - 10} more</i>\n`;
+        }
+        report += `\n`;
+      }
 
       if (blocked.length > 0) {
         report += `<b>Blocked Threats:</b>\n`;
@@ -725,6 +738,21 @@ export class TelegramBotHandler {
   }
 
   /**
+   * Helper to broadcast an informational message to all admins except optionally the initiator
+   */
+  private async broadcastToOtherAdmins(text: string, excludeChatId?: number | string): Promise<void> {
+    const exclude = excludeChatId !== undefined ? String(excludeChatId) : null;
+    for (const adminId of this.adminChatIds) {
+      if (exclude && adminId === exclude) continue;
+      try {
+        await this.client.sendMessage(adminId, text);
+      } catch (err) {
+        // Suppress broadcast transmission errors
+      }
+    }
+  }
+
+  /**
    * /admins command: Displays authorized administrator accounts
    */
   private async sendAdmins(chatId: number): Promise<void> {
@@ -766,6 +794,12 @@ export class TelegramBotHandler {
       };
 
       await this.client.sendMessage(chatId, text, { reply_markup: keyboard });
+
+      // Notify other admins about manual ban
+      await this.broadcastToOtherAdmins(
+        `ℹ️ <b>Admin Action: IP Blocked Manually</b>\n🌐 <b>IP:</b> <code>${ip}</code>\n📝 <b>Comment:</b> ${comment}`,
+        chatId
+      );
     } catch (err) {
       await this.client.sendMessage(chatId, `❌ Ban Failed:\n<code>${(err as Error).message}</code>`);
     }
@@ -822,6 +856,12 @@ export class TelegramBotHandler {
       await this.client.sendMessage(
         chatId,
         `✅ <b>Unbanned ${toDelete.length} IP(s) in 1 Batch!</b>\n\n${unbannedList}\n\n<i>Removed from Cloudflare WAF list.</i>`
+      );
+
+      // Notify other admins about manual unban
+      await this.broadcastToOtherAdmins(
+        `ℹ️ <b>Admin Action: IP Unbanned Manually</b>\n\n${unbannedList}\n\n<i>Removed from Cloudflare WAF list.</i>`,
+        chatId
       );
     } catch (err) {
       await this.client.sendMessage(chatId, `❌ Unban Failed:\n<code>${(err as Error).message}</code>`);
@@ -898,6 +938,12 @@ export class TelegramBotHandler {
       } else {
         await this.client.sendMessage(chatId, text);
       }
+
+      // Notify other admins about blocklist flush
+      await this.broadcastToOtherAdmins(
+        `🧹 <b>Admin Action: Blocklist Flushed</b>\nAll <b>${items.length}</b> IPs have been deleted from Cloudflare WAF by${userTag}.`,
+        chatId
+      );
     } catch (err) {
       const text = `❌ <b>Flush Failed:</b> ${(err as Error).message}`;
       if (messageId) await this.client.editMessageText(chatId, messageId, text);
@@ -986,8 +1032,49 @@ export class TelegramBotHandler {
               `${cb.message.text || ""}\n\n✅ <b>[UNBANNED]</b> <i>(by @${cb.from.username || cb.from.first_name})</i>`
             );
           }
+
+          // Broadcast unban action to other admins
+          const adminTag = cb.from.username ? `@${cb.from.username}` : (cb.from.first_name || "Admin");
+          await this.broadcastToOtherAdmins(
+            `🔓 <b>Admin Action: IP Unbanned via Button</b>\n🌐 <b>IP:</b> <code>${ip}</code>\n👤 <b>By:</b> ${adminTag}`,
+            chatId
+          );
         } catch (err) {
           await this.client.sendMessage(chatId, `❌ Unban Error: ${(err as Error).message}`);
+        }
+      }
+      return;
+    }
+
+    if (data.startsWith("reban:")) {
+      const ip = data.replace("reban:", "");
+      await this.client.answerCallbackQuery(cb.id, `Re-banning ${ip}...`);
+
+      if (this.listId) {
+        try {
+          await this.listsService.addIpToList(
+            this.listId,
+            ip,
+            `Manual re-ban via Telegram by @${cb.from.username || cb.from.first_name || cb.from.id}`
+          );
+          this.blocker.markAsBlockedLocally(ip);
+
+          if (cb.message) {
+            await this.client.editMessageText(
+              chatId,
+              cb.message.message_id,
+              `${cb.message.text || ""}\n\n🚫 <b>[RE-BANNED]</b> <i>(by @${cb.from.username || cb.from.first_name})</i>`
+            );
+          }
+
+          // Broadcast re-ban action to other admins
+          const adminTag = cb.from.username ? `@${cb.from.username}` : (cb.from.first_name || "Admin");
+          await this.broadcastToOtherAdmins(
+            `🚫 <b>Admin Action: IP Re-Banned via Button</b>\n🌐 <b>IP:</b> <code>${ip}</code>\n👤 <b>By:</b> ${adminTag}`,
+            chatId
+          );
+        } catch (err) {
+          await this.client.sendMessage(chatId, `❌ Re-ban Error: ${(err as Error).message}`);
         }
       }
       return;
@@ -1036,6 +1123,63 @@ export class TelegramBotHandler {
         };
 
         await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+      }
+    }
+  }
+
+  /**
+   * Broadcasts a real-time notification to all administrators whenever IPs are unbanned
+   * (e.g. TTL expired or FIFO list limit pruning)
+   */
+  public async notifyUnbannedIps(unbanned: PrunedUnbanItem[]): Promise<void> {
+    if (!unbanned || unbanned.length === 0 || this.adminChatIds.size === 0) return;
+
+    if (unbanned.length <= 5) {
+      for (const adminId of this.adminChatIds) {
+        for (const u of unbanned) {
+          const reasonLabel =
+            u.reason === "TTL_EXPIRED"
+              ? "⏳ <b>TTL Expired</b> <i>(Automatic ban expiration)</i>"
+              : "🧹 <b>List Limit FIFO</b> <i>(Pruned to preserve list capacity)</i>";
+
+          const text =
+            `🔓 <b>Auto Guard: IP Unbanned</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `🌐 <b>IP:</b> <code>${u.ip}</code>\n` +
+            `📋 <b>Reason:</b> ${reasonLabel}\n` +
+            (u.comment ? `💬 <b>Original Ban:</b> <i>${u.comment}</i>\n` : "") +
+            (u.createdOn ? `📅 <b>Banned At:</b> <i>${u.createdOn}</i>\n` : "") +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+
+          const keyboard: TelegramInlineKeyboardMarkup = {
+            inline_keyboard: [[{ text: `🚫 Re-Ban (${u.ip})`, callback_data: `reban:${u.ip}` }]]
+          };
+
+          await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+        }
+      }
+    } else {
+      for (const adminId of this.adminChatIds) {
+        let text =
+          `🔓 <b>Auto Guard: Batch Auto-Unban Executed</b>\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `<b>Total Unbanned:</b> ${unbanned.length} IPs\n\n`;
+
+        for (const u of unbanned.slice(0, 25)) {
+          const tag = u.reason === "TTL_EXPIRED" ? "TTL Expired" : "FIFO Overflow";
+          text += `• <code>${u.ip}</code> — <i>${tag}</i>\n`;
+        }
+
+        if (unbanned.length > 25) {
+          text += `\n<i>...and ${unbanned.length - 25} additional IPs</i>\n`;
+        }
+
+        text +=
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+
+        await this.client.sendMessage(adminId, text);
       }
     }
   }

@@ -257,7 +257,28 @@ Whenever the automated cron detects high-frequency attacks or policy violations,
 
 ---
 
-### 🛠️ 3. Telegram Bot Setup (in 3 Simple Steps)
+### 🔓 3. Real-Time Auto-Unban Notifications
+
+Whenever an IP is automatically unbanned (either through TTL expiration e.g., 24 hours or FIFO list limit pruning), all configured administrators receive an instant push notification with a 1-click **[ 🚫 Re-Ban ]** button:
+
+```text
+🔓 Auto Guard: IP Unbanned
+━━━━━━━━━━━━━━━━━━━━
+🌐 IP: 185.220.101.5
+📋 Reason: ⏳ TTL Expired (Automatic ban expiration)
+💬 Original Ban: Auto Guard: RU | Req: 1420 (Limit: 300/1h) | Rank: #1
+📅 Banned At: 2026-09-30T15:20:00Z
+━━━━━━━━━━━━━━━━━━━━
+⏰ 2026-10-01 15:20:00 UTC
+
+[ 🚫 Re-Ban (185.220.101.5) ]  <-- (Instant Re-ban Button)
+```
+
+For large unban batches (> 5 IPs), a consolidated summary card is broadcasted to keep administrators fully informed without hitting Telegram message rate limits.
+
+---
+
+### 🛠️ 4. Telegram Bot Setup (in 3 Simple Steps)
 
 #### Step 1: Create Your Bot & Obtain Chat ID
 1. Open Telegram and search for **[@BotFather](https://t.me/BotFather)**. Send `/newbot`, name your bot, and copy the provided `HTTP API Token`.
