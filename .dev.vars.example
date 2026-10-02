@@ -1,8 +1,11 @@
 # Cloudflare API Credentials for Lists Mutation and GraphQL Analytics
 CF_API_TOKEN=your_cloudflare_api_token_here
 CF_ACCOUNT_ID=your_cloudflare_account_id_here
-CF_ZONE_ID=your_cloudflare_zone_id_here
 CF_LIST_ID=your_cloudflare_list_id_here
+
+# Cloudflare Protected Zones: Single or multiple domains on a shared 10,000 WAF blocklist
+# Format: "domain1.com:zone_id_1" OR "domain1.com:zone_id_1 | domain2.com:zone_id_2"
+CF_ZONES="domain1.com:your_zone_id_1 | domain2.com:your_zone_id_2"
 
 # Runtime switches
 DRY_RUN=false
@@ -12,5 +15,5 @@ GUARD_ADMIN_TOKEN=your_super_secret_admin_token_here
 
 # Telegram Bot Integration (Two-way interactive commands & real-time push alerts)
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRstuVWXyz
-# Multi-Admin Support: Add multiple individual user IDs or group chat IDs (comma, space, or semicolon separated)
-TELEGRAM_ADMIN_CHAT_ID="123456789, 987654321, -1001234567890"
+# Multi-Admin Support: Add multiple user IDs or group chat IDs separated by | (or comma/space)
+TELEGRAM_ADMIN_CHAT_ID="123456789 | 987654321 | -1001234567890"

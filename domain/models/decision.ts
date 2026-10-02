@@ -28,4 +28,6 @@ export interface GuardDecision {
   rank: number;
   threshold: number;
   windowSeconds: number;
+  zoneId?: string;
+  zoneName?: string;
 }

@@ -4,7 +4,13 @@ node_modules/
 # Cloudflare Wrangler & Secrets
 .wrangler/
 .dev.vars
+.dev.vars.*
+.env
+.env.*
+*.local
 policy.json
+*.pem
+*.key
 
 # Build output
 dist/

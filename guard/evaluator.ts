@@ -18,11 +18,13 @@ export interface CandidateEvaluationContext {
   policy: GuardPolicy;
   allowlistMatcher: AllowlistMatcher;
   isAlreadyBlocked?: boolean;
+  zoneId?: string;
+  zoneName?: string;
 }
 
 export class CandidateEvaluator {
   public static evaluate(ctx: CandidateEvaluationContext): GuardDecision {
-    const { ip, country, asn, requestCount, rank, policy, allowlistMatcher, isAlreadyBlocked } = ctx;
+    const { ip, country, asn, requestCount, rank, policy, allowlistMatcher, isAlreadyBlocked, zoneId, zoneName } = ctx;
 
     // 1. Global Guard enabled?
     if (!policy.enabled) {
@@ -34,7 +36,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: 0,
-        windowSeconds: policy.windowSeconds ?? 300
+        windowSeconds: policy.windowSeconds ?? 300,
+        zoneId,
+        zoneName
       };
     }
 
@@ -48,7 +52,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: 0,
-        windowSeconds: policy.windowSeconds ?? 300
+        windowSeconds: policy.windowSeconds ?? 300,
+        zoneId,
+        zoneName
       };
     }
 
@@ -62,7 +68,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: 0,
-        windowSeconds: policy.windowSeconds ?? 300
+        windowSeconds: policy.windowSeconds ?? 300,
+        zoneId,
+        zoneName
       };
     }
 
@@ -79,7 +87,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: resolved.threshold,
-        windowSeconds: resolved.windowSeconds
+        windowSeconds: resolved.windowSeconds,
+        zoneId,
+        zoneName
       };
     }
 
@@ -93,7 +103,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: resolved.threshold,
-        windowSeconds: resolved.windowSeconds
+        windowSeconds: resolved.windowSeconds,
+        zoneId,
+        zoneName
       };
     }
 
@@ -107,7 +119,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: resolved.threshold,
-        windowSeconds: resolved.windowSeconds
+        windowSeconds: resolved.windowSeconds,
+        zoneId,
+        zoneName
       };
     }
 
@@ -121,7 +135,9 @@ export class CandidateEvaluator {
         requestCount,
         rank,
         threshold: resolved.threshold,
-        windowSeconds: resolved.windowSeconds
+        windowSeconds: resolved.windowSeconds,
+        zoneId,
+        zoneName
       };
     }
 
@@ -135,7 +151,9 @@ export class CandidateEvaluator {
       requestCount,
       rank,
       threshold: resolved.threshold,
-      windowSeconds: resolved.windowSeconds
+      windowSeconds: resolved.windowSeconds,
+      zoneId,
+      zoneName
     };
   }
 }
