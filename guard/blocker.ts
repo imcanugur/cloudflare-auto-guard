@@ -19,12 +19,13 @@ export interface PrunedUnbanItem {
 }
 
 function formatComment(decision: GuardDecision): string {
-  const { country, asn, requestCount, rank, threshold, windowSeconds } = decision;
+  const { country, asn, requestCount, rank, threshold, windowSeconds, zoneName, zoneId } = decision;
   const windowMinutes = Math.max(1, Math.round((windowSeconds || 3600) / 60));
   const windowStr = windowMinutes >= 60 ? `${Math.round(windowMinutes / 60)}h` : `${windowMinutes}m`;
   const dateStr = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
   const asnStr = asn ? ` | ASN: ${asn.slice(0, 24).trim()}` : "";
-  return `Auto Guard: ${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;
+  const zoneTag = zoneName ? `[${zoneName}] ` : (zoneId ? `[${zoneId.slice(0, 8)}] ` : "");
+  return `Auto Guard: ${zoneTag}${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;
 }
 
 export class Blocker {

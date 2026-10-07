@@ -9,6 +9,7 @@ import { Blocker, PrunedUnbanItem } from "@/guard/blocker";
 import { GuardPolicy } from "@/domain/models/policy";
 import { GuardDecision } from "@/domain/models/decision";
 import { safeValidatePolicy } from "@/config/policy-schema";
+import { ZoneConfig } from "@/domain/models/zone";
 
 export interface TelegramBotOptions {
   client: TelegramClient;
@@ -17,7 +18,7 @@ export interface TelegramBotOptions {
   decisionEngine: DecisionEngine;
   blocker: Blocker;
   listId?: string;
-  zoneId?: string;
+  zones?: ZoneConfig[];
   getPolicy: () => Promise<GuardPolicy>;
   savePolicy?: (policy: GuardPolicy) => Promise<void>;
 }
@@ -29,7 +30,7 @@ export class TelegramBotHandler {
   private decisionEngine: DecisionEngine;
   private blocker: Blocker;
   private listId?: string;
-  private zoneId?: string;
+  private zones: ZoneConfig[];
   private getPolicy: () => Promise<GuardPolicy>;
   private savePolicy?: (policy: GuardPolicy) => Promise<void>;
 
@@ -40,7 +41,7 @@ export class TelegramBotHandler {
     this.decisionEngine = options.decisionEngine;
     this.blocker = options.blocker;
     this.listId = options.listId;
-    this.zoneId = options.zoneId;
+    this.zones = options.zones || [];
     this.getPolicy = options.getPolicy;
     this.savePolicy = options.savePolicy;
   }
@@ -236,13 +237,20 @@ export class TelegramBotHandler {
     const maxLimit = policy.unban?.maxListSize ?? 9000;
     const countryCount = Object.keys(policy.countries || {}).length;
 
+    const zonesStr =
+      this.zones.length > 1
+        ? `🌐 <b>Monitored Zones (${this.zones.length}):</b>\n` +
+          this.zones.map((z) => `  • <code>${z.name}</code> (<code>${z.id.slice(0, 6)}...</code>)`).join("\n") +
+          "\n"
+        : `🌐 <b>Zone:</b> <code>${this.zones[0]?.name || "Not Configured"}</code>\n`;
+
     const text =
       `📊 <b>Auto Guard System Status</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🟢 <b>Status:</b> Active & Guarding\n` +
       `👥 <b>Authorized Admins:</b> <b>${this.adminChatIds.size}</b>\n` +
-      `🌐 <b>Zone ID:</b> <code>${this.zoneId || "Not Configured"}</code>\n` +
-      `📋 <b>WAF List ID:</b> <code>${this.listId || "Not Configured"}</code>\n` +
+      zonesStr +
+      `📋 <b>Shared WAF List:</b> <code>${this.listId || "Not Configured"}</code>\n` +
       `🚫 <b>Active Banned IPs:</b> <b>${itemCount}</b> / 10,000\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `⚙️ <b>Policy Summary:</b>\n` +
@@ -324,29 +332,45 @@ export class TelegramBotHandler {
   }
 
   /**
-   * /evaluate command: Instantly triggers GraphQL analytics traffic inspection
+   * /evaluate command: Instantly triggers GraphQL analytics traffic inspection across all monitored zones
    */
   private async executeEvaluate(chatId: number): Promise<void> {
-    if (!this.zoneId) {
-      await this.client.sendMessage(chatId, "⚠️ CF_ZONE_ID is not configured.");
+    if (this.zones.length === 0) {
+      await this.client.sendMessage(chatId, "⚠️ No zones are configured (CF_ZONES missing).");
       return;
     }
 
-    await this.client.sendMessage(chatId, "🔍 <i>Querying Cloudflare edge analytics, please wait...</i>");
+    const zoneNames = this.zones.map((z) => z.name).join(", ");
+    await this.client.sendMessage(
+      chatId,
+      `🔍 <i>Querying Cloudflare edge analytics across <b>${this.zones.length} zone(s)</b> (${zoneNames}), please wait...</i>`
+    );
 
     try {
       const policy = await this.getPolicy();
-      const { decisions, unbanned } = await this.decisionEngine.evaluateCandidates(policy, this.zoneId);
+      const { decisions, unbanned, zoneSummaries } = await this.decisionEngine.evaluateZones(
+        policy,
+        this.zones
+      );
 
       const blocked = decisions.filter((d) => d.action === "BLOCK");
       const ignored = decisions.filter((d) => d.action === "IGNORE");
 
       let report =
-        `⚡ <b>Evaluation Completed!</b>\n\n` +
-        `📊 <b>Analyzed Candidates:</b> ${decisions.length}\n` +
-        `🚫 <b>Newly Blocked:</b> ${blocked.length}\n` +
-        `🔓 <b>Auto-Unbanned:</b> ${unbanned.length}\n` +
+        `⚡ <b>Multi-Zone Evaluation Completed!</b>\n\n` +
+        `🌐 <b>Evaluated Zones:</b> ${this.zones.length}\n` +
+        `📊 <b>Total Analyzed Candidates:</b> ${decisions.length}\n` +
+        `🚫 <b>Total Newly Blocked:</b> ${blocked.length}\n` +
+        `🔓 <b>Auto-Unbanned (TTL/FIFO):</b> ${unbanned.length}\n` +
         `✅ <b>Clean / Ignored:</b> ${ignored.length}\n\n`;
+
+      if (zoneSummaries.length > 1) {
+        report += `<b>Zone Breakdown:</b>\n`;
+        for (const zs of zoneSummaries) {
+          report += `• <code>${zs.zoneName}</code>: ${zs.evaluated} analyzed, <b>${zs.blocked} blocked</b>\n`;
+        }
+        report += `\n`;
+      }
 
       if (unbanned.length > 0) {
         report += `<b>Auto-Unbanned IPs (TTL / FIFO):</b>\n`;
@@ -363,10 +387,11 @@ export class TelegramBotHandler {
       if (blocked.length > 0) {
         report += `<b>Blocked Threats:</b>\n`;
         for (const b of blocked) {
-          report += `• <code>${b.ip}</code> (${b.country || "??"}) — ${b.requestCount} reqs (Limit: ${b.threshold})\n`;
+          const zoneTag = b.zoneName ? `[${b.zoneName}] ` : "";
+          report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — ${b.requestCount} reqs (Limit: ${b.threshold})\n`;
         }
       } else {
-        report += `<i>No threshold violations detected. All systems secure.</i>`;
+        report += `<i>No threshold violations detected across any zone. All systems secure.</i>`;
       }
 
       await this.client.sendMessage(chatId, report);
@@ -1107,9 +1132,16 @@ export class TelegramBotHandler {
 
     for (const adminId of this.adminChatIds) {
       for (const d of newlyBlocked) {
+        const zoneLine = d.zoneName
+          ? `🌐 <b>Target Zone:</b> <code>${d.zoneName}</code>\n`
+          : d.zoneId
+          ? `🌐 <b>Zone ID:</b> <code>${d.zoneId}</code>\n`
+          : "";
+
         const text =
           `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>\n` +
           `━━━━━━━━━━━━━━━━━━━━\n` +
+          zoneLine +
           `🌐 <b>IP:</b> <code>${d.ip}</code>\n` +
           `🏳️ <b>Country:</b> ${d.country || "Unknown"}\n` +
           `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n` +

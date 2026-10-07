@@ -10,11 +10,12 @@ High-frequency malicious traffic, DDoS probes, and scrapers often display distin
 
 ### Key Highlights
 * **Zero External Dependencies**: No Redis, PostgreSQL, Node.js VPS, Docker containers, or third-party servers required. Everything runs 100% natively on Cloudflare.
-* **Edge GraphQL Analytics**: Queries live edge traffic directly via Cloudflare Analytics API (`httpRequestsAdaptiveGroups`).
+* **Multi-Zone Protection on Shared List**: Protect 1 or dozens of domains simultaneously (`CF_ZONES="domain1.com:id1 | domain2.com:id2"`) using a single, unified 10,000-item edge IP list.
+* **Edge GraphQL Analytics**: Queries live edge traffic directly via Cloudflare Analytics API (`httpRequestsAdaptiveGroups`) per protected zone.
 * **High-Performance Bulk Batching**: Applies bans in a single bulk API call (up to 1,000 IPs per request), completely preventing subrequest limit errors.
 * **Automated Unban (TTL & 10k Limit Protection)**: Automatically expires and prunes old bans after a configurable TTL (e.g., 24 hours) and applies FIFO pruning when approaching Cloudflare's 10,000 list item limit.
-* **Runtime Dynamic Policies**: Policies are stored in Cloudflare KV (`POLICY_KV`). Rules, thresholds, and time windows can be updated instantaneously via cURL or Postman **without redeploying code**.
-* **Detailed Audit Trail**: Enriches banned IPs with metadata comments including Country, Request count, Rule threshold, Time window, Traffic rank, and UTC timestamp.
+* **Runtime Dynamic Policies**: Policies are stored in Cloudflare KV (`POLICY_KV`). Rules, thresholds, and time windows can be updated instantaneously via cURL, Postman, or Telegram **without redeploying code**.
+* **Detailed Audit Trail**: Enriches banned IPs with metadata comments including Target Zone, Country, Request count, Rule threshold, Time window, Traffic rank, and UTC timestamp.
 * **Failure Isolation**: If the Cloudflare Lists API experiences an anomaly, legitimate user traffic is never interrupted.
 * **Dry-Run Mode**: Full audit trail of block decisions (`WOULD_BLOCK`) without calling the mutation API for safe staging validation.
 * **100% Idempotent**: Prevents duplicate Cloudflare API calls by checking existing list items before evaluation.
@@ -127,21 +128,20 @@ cd cloudflare-auto-guard
 npm install
 ```
 
-### 2. Configure Cloudflare Secrets
+### 2. Configure Cloudflare Secrets & Multi-Zone Support
 Set your credentials directly into Cloudflare's encrypted vault:
 
 ```bash
-# Zone ID of the website you want to protect
-npx wrangler secret put CF_ZONE_ID
-
-# Your Cloudflare Account ID
+# Your Cloudflare Account ID & API Token
 npx wrangler secret put CF_ACCOUNT_ID
-
-# Cloudflare API Token (Requires Zone:Analytics:Read, Zone:Zone:Read, Account:Lists:Edit)
 npx wrangler secret put CF_API_TOKEN
 
-# Cloudflare Rules List ID for 'auto_guard_block'
+# Cloudflare Rules List ID for 'auto_guard_block' (Shared across all your zones)
 npx wrangler secret put CF_LIST_ID
+
+# Cloudflare Protected Zones (Single or multiple domains on 1 shared WAF list)
+# Format: "domain1.com:zone_id_1" OR "domain1.com:zone_id_1 | domain2.com:zone_id_2"
+npx wrangler secret put CF_ZONES
 
 # Optional: Admin Secret Token to protect /__guard/* routes
 npx wrangler secret put GUARD_ADMIN_TOKEN
@@ -241,13 +241,14 @@ Whenever the automated cron detects high-frequency attacks or policy violations,
 ```text
 🚨 Auto Guard: Threat Detected & Mitigated!
 ━━━━━━━━━━━━━━━━━━━━
-🌐 IP: 185.220.101.5
+🌐 Target Zone: example.com
+🏴‍☠️ Attacker IP: 185.220.101.5
 🏳️ Country: Russia (RU)
 📊 Traffic: 1,420 requests (Threshold: 300)
 🏷️ Rank: #1
 📝 Reason: Exceeded country RU limit of 300 requests
 ━━━━━━━━━━━━━━━━━━━━
-⏰ 2026-09-30 15:20:00 UTC
+⏰ 2026-10-02 15:20:00 UTC
 
 [ 🔓 Unban (185.220.101.5) ]  <-- (Interactive Inline Button)
 ```
@@ -291,7 +292,7 @@ npx wrangler secret put TELEGRAM_BOT_TOKEN
 # Paste your BotFather token when prompted
 
 # Save your Telegram Admin Chat IDs (supports multiple user IDs and group IDs)
-# Format: comma, space, or semicolon separated: "12345678, 87654321, -1001234567890"
+# Format: separated by | (or comma/space): "12345678 | 87654321 | -1001234567890"
 npx wrangler secret put TELEGRAM_ADMIN_CHAT_ID
 # Paste your user/group IDs when prompted
 
@@ -300,7 +301,7 @@ npx wrangler deploy
 ```
 
 > **Multi-Admin & Group Support**:  
-> You can pass multiple individual user IDs (e.g. `11111,22222`) or an entire **Telegram Group / Channel ID** (e.g. `-1001234567890`). All admins receive real-time alerts simultaneously, and any authorized admin can run commands or click the inline unban button.
+> You can pass multiple individual user IDs separated by pipe (e.g. `11111 | 22222`) or an entire **Telegram Group / Channel ID** (e.g. `-1001234567890`). All admins receive real-time alerts simultaneously, and any authorized admin can run commands or click the inline unban button.
 
 #### Step 3: Register Webhook & Autocomplete Commands
 Open the setup endpoint in your browser or curl:

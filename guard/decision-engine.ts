@@ -7,7 +7,9 @@ import { CloudflareAnalyticsService } from "@/cloudflare/analytics";
 import { AllowlistMatcher } from "@/security/allowlist";
 import { CandidateEvaluator } from "@/guard/evaluator";
 import { Blocker, PrunedUnbanItem } from "@/guard/blocker";
+import { ZoneConfig } from "@/domain/models/zone";
 import { metrics } from "@/observability/metrics";
+import { logger } from "@/observability/logger";
 
 export interface DecisionEngineOptions {
   analyticsService: CloudflareAnalyticsService;
@@ -18,6 +20,20 @@ export interface DecisionEngineOptions {
 export interface EvaluationResult {
   decisions: GuardDecision[];
   unbanned: PrunedUnbanItem[];
+}
+
+export interface ZoneEvaluationSummary {
+  zoneId: string;
+  zoneName: string;
+  evaluated: number;
+  blocked: number;
+  ignored: number;
+}
+
+export interface MultiZoneEvaluationResult {
+  decisions: GuardDecision[];
+  unbanned: PrunedUnbanItem[];
+  zoneSummaries: ZoneEvaluationSummary[];
 }
 
 export class DecisionEngine {
@@ -32,17 +48,35 @@ export class DecisionEngine {
   }
 
   /**
-   * Fetches top traffic candidates from Cloudflare Analytics and evaluates against active policy
+   * Fetches top traffic candidates from Cloudflare Analytics for a single zone
    */
-  public async evaluateCandidates(policy: GuardPolicy, zoneId: string): Promise<EvaluationResult> {
-    if (!policy.enabled || !zoneId) {
-      return { decisions: [], unbanned: [] };
+  public async evaluateCandidates(
+    policy: GuardPolicy,
+    zoneId: string,
+    zoneName?: string
+  ): Promise<EvaluationResult> {
+    const multi = await this.evaluateZones(policy, [{ id: zoneId, name: zoneName || zoneId }]);
+    return {
+      decisions: multi.decisions,
+      unbanned: multi.unbanned
+    };
+  }
+
+  /**
+   * Evaluates multiple zones in parallel/sequence against active policy using a shared blocklist
+   */
+  public async evaluateZones(
+    policy: GuardPolicy,
+    zones: ZoneConfig[]
+  ): Promise<MultiZoneEvaluationResult> {
+    if (!policy.enabled || zones.length === 0) {
+      return { decisions: [], unbanned: [], zoneSummaries: [] };
     }
 
     const windowSeconds = policy.windowSeconds ?? 300;
     const topN = policy.topN ?? 100;
 
-    // 1. Sync existing blocked IPs and prune expired/stale bans (TTL & 10k limit protection)
+    // 1. Sync existing blocked IPs and prune expired/stale bans on shared list ONCE
     let unbanned: PrunedUnbanItem[] = [];
     const unbanConfig = policy.unban;
     if (unbanConfig?.enabled !== false) {
@@ -53,42 +87,71 @@ export class DecisionEngine {
       await this.blocker.syncExistingList();
     }
 
-    // 2. Fetch real edge Top-N IP statistics directly from Cloudflare GraphQL Analytics
-    const candidates = await this.analyticsService.fetchTopIps(zoneId, windowSeconds, topN);
-    metrics.increment("top_n_candidates", candidates.length);
+    const allDecisions: GuardDecision[] = [];
+    const toBlockGlobal: GuardDecision[] = [];
+    const zoneSummaries: ZoneEvaluationSummary[] = [];
 
-    const decisions: GuardDecision[] = [];
-    const toBlock: GuardDecision[] = [];
+    // 2. Query Analytics and evaluate candidates across all configured zones
+    for (const zone of zones) {
+      try {
+        const candidates = await this.analyticsService.fetchTopIps(zone.id, windowSeconds, topN);
+        metrics.increment("top_n_candidates", candidates.length);
 
-    // 3. Evaluate each candidate against the resolved country policy
-    for (const candidate of candidates) {
-      const isAlreadyBlocked = this.blocker.isAlreadyBlocked(candidate.ip);
+        let blockedCount = 0;
+        let ignoredCount = 0;
 
-      const decision = CandidateEvaluator.evaluate({
-        ip: candidate.ip,
-        country: candidate.country,
-        asn: candidate.asn,
-        requestCount: candidate.requestCount,
-        rank: candidate.rank,
-        policy,
-        allowlistMatcher: this.allowlistMatcher,
-        isAlreadyBlocked
-      });
+        for (const candidate of candidates) {
+          const isAlreadyBlocked = this.blocker.isAlreadyBlocked(candidate.ip);
 
-      if (decision.action === "BLOCK") {
-        toBlock.push(decision);
-      } else {
-        metrics.increment("ignored_ips");
-        decisions.push(decision);
+          const decision = CandidateEvaluator.evaluate({
+            ip: candidate.ip,
+            country: candidate.country,
+            asn: candidate.asn,
+            requestCount: candidate.requestCount,
+            rank: candidate.rank,
+            policy,
+            allowlistMatcher: this.allowlistMatcher,
+            isAlreadyBlocked,
+            zoneId: zone.id,
+            zoneName: zone.name
+          });
+
+          if (decision.action === "BLOCK") {
+            toBlockGlobal.push(decision);
+            blockedCount++;
+          } else {
+            metrics.increment("ignored_ips");
+            allDecisions.push(decision);
+            ignoredCount++;
+          }
+        }
+
+        zoneSummaries.push({
+          zoneId: zone.id,
+          zoneName: zone.name,
+          evaluated: candidates.length,
+          blocked: blockedCount,
+          ignored: ignoredCount
+        });
+      } catch (err) {
+        logger.error("ZONE_EVALUATION_FAILED", {
+          zoneId: zone.id,
+          zoneName: zone.name,
+          message: (err as Error).message
+        });
       }
     }
 
-    // 4. Execute all blocks in a single batch API call (prevents subrequest limit errors)
-    if (toBlock.length > 0) {
-      const executedBlocks = await this.blocker.executeBlockBatch(toBlock);
-      decisions.push(...executedBlocks);
+    // 3. Execute all blocks across all evaluated zones in a single batch mutation
+    if (toBlockGlobal.length > 0) {
+      const executedBlocks = await this.blocker.executeBlockBatch(toBlockGlobal);
+      allDecisions.push(...executedBlocks);
     }
 
-    return { decisions, unbanned };
+    return {
+      decisions: allDecisions,
+      unbanned,
+      zoneSummaries
+    };
   }
 }

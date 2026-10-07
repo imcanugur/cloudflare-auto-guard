@@ -18,12 +18,13 @@ import { CloudflareAnalyticsService } from "@/cloudflare/analytics";
 import { TelegramClient } from "@/telegram/client";
 import { TelegramBotHandler } from "@/telegram/bot";
 import { TelegramUpdate } from "@/telegram/types";
+import { parseZones } from "@/domain/models/zone";
 import { logger } from "@/observability/logger";
 import { metrics } from "@/observability/metrics";
 
 export interface Env {
   POLICY_KV?: KVNamespace;
-  CF_ZONE_ID?: string;
+  CF_ZONES?: string;
   CF_ACCOUNT_ID?: string;
   CF_API_TOKEN?: string;
   CF_LIST_ID?: string;
@@ -82,9 +83,11 @@ function createServices(env: Env) {
 
   const telegramClient = new TelegramClient(env.TELEGRAM_BOT_TOKEN || "");
   const adminChatIds = (env.TELEGRAM_ADMIN_CHAT_ID || "")
-    .split(/[,\s;]+/)
+    .split(/[|\r\n,;\s]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+
+  const zones = parseZones(env.CF_ZONES);
 
   const telegramBot = new TelegramBotHandler({
     client: telegramClient,
@@ -93,7 +96,7 @@ function createServices(env: Env) {
     decisionEngine,
     blocker,
     listId: env.CF_LIST_ID,
-    zoneId: env.CF_ZONE_ID,
+    zones,
     getPolicy: () => getActivePolicy(env),
     savePolicy: async (newPolicy: GuardPolicy) => {
       if (env.POLICY_KV) {
@@ -106,7 +109,7 @@ function createServices(env: Env) {
     }
   });
 
-  return { decisionEngine, listsService, blocker, telegramClient, telegramBot };
+  return { decisionEngine, listsService, blocker, telegramClient, telegramBot, zones };
 }
 
 export default {
@@ -128,13 +131,15 @@ export default {
 
     // 0.5. Debug endpoint: Diagnostic check of environment variables presence
     if (url.pathname === "/_debug" || url.pathname === "/__guard/debug") {
+      const zones = parseZones(env.CF_ZONES);
       return new Response(
         JSON.stringify(
           {
             CF_ACCOUNT_ID: !!env.CF_ACCOUNT_ID,
             CF_API_TOKEN: !!env.CF_API_TOKEN,
             CF_LIST_ID: !!env.CF_LIST_ID,
-            CF_ZONE_ID: !!env.CF_ZONE_ID,
+            CF_ZONES: !!env.CF_ZONES,
+            configuredZones: zones.map((z) => ({ name: z.name, id: `${z.id.slice(0, 6)}...` })),
             DRY_RUN: env.DRY_RUN,
             GUARD_ADMIN_TOKEN: !!env.GUARD_ADMIN_TOKEN,
             TELEGRAM_BOT_TOKEN: !!env.TELEGRAM_BOT_TOKEN,
@@ -315,19 +320,26 @@ export default {
 
     // 5. Manual evaluation endpoint: Fetches edge analytics and evaluates top IPs immediately
     if (url.pathname === "/__guard/evaluate" || url.pathname === "/evaluate") {
-      const zoneId = env.CF_ZONE_ID || url.searchParams.get("zoneId") || "";
+      const queryZoneId = url.searchParams.get("zoneId");
+      const queryZoneName = url.searchParams.get("zoneName");
+      const targetZones = queryZoneId
+        ? [{ id: queryZoneId, name: queryZoneName || queryZoneId }]
+        : parseZones(env.CF_ZONES);
 
-      if (!zoneId) {
+      if (targetZones.length === 0) {
         return new Response(
           JSON.stringify({
-            error: "MISSING_ZONE_ID",
-            message: "CF_ZONE_ID environment variable or ?zoneId query parameter is required."
+            error: "MISSING_ZONES",
+            message: "CF_ZONES is not configured, and no ?zoneId query parameter was provided."
           }),
           { status: 400, headers: { "Content-Type": "application/json" } }
         );
       }
 
-      const { decisions, unbanned } = await decisionEngine.evaluateCandidates(activePolicy, zoneId);
+      const { decisions, unbanned, zoneSummaries } = await decisionEngine.evaluateZones(
+        activePolicy,
+        targetZones
+      );
 
       // Push real-time alert to Telegram admins for blocked threats & unbanned IPs
       ctx.waitUntil(
@@ -341,7 +353,9 @@ export default {
         JSON.stringify(
           {
             status: "success",
-            zoneId,
+            zonesEvaluated: targetZones.length,
+            zones: targetZones.map((z) => z.name),
+            zoneSummaries,
             evaluated: decisions.length,
             unbannedCount: unbanned.length,
             unbanned,
@@ -357,13 +371,16 @@ export default {
     }
 
     // Default status dashboard response (JSON)
+    const configuredZones = parseZones(env.CF_ZONES);
     return new Response(
       JSON.stringify(
         {
           status: "active",
           guard: "Cloudflare Auto Guard (Edge Engine)",
           telegramBot: !!env.TELEGRAM_BOT_TOKEN ? "enabled" : "disabled",
-          zoneId: env.CF_ZONE_ID ? `${env.CF_ZONE_ID.slice(0, 6)}...` : "NOT_CONFIGURED",
+          monitoredZonesCount: configuredZones.length,
+          monitoredZones: configuredZones.map((z) => z.name),
+          sharedListId: env.CF_LIST_ID ? `${env.CF_LIST_ID.slice(0, 6)}...` : "NOT_CONFIGURED",
           interfaces: {
             telegramWebhook: "/__guard/telegram/webhook",
             telegramSetup: "/__guard/telegram/setup",
@@ -385,10 +402,10 @@ export default {
    * Scheduled cron event: Periodically inspects Cloudflare Analytics and enforces security policy
    */
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    const zoneId = env.CF_ZONE_ID;
-    if (!zoneId) {
-      logger.warn("SCHEDULED_SKIPPED_NO_ZONE_ID", {
-        message: "CF_ZONE_ID is not configured. Skipping automated evaluation."
+    const zones = parseZones(env.CF_ZONES);
+    if (zones.length === 0) {
+      logger.warn("SCHEDULED_SKIPPED_NO_ZONES", {
+        message: "CF_ZONES is not configured. Skipping automated evaluation."
       });
       return;
     }
@@ -402,7 +419,7 @@ export default {
 
     ctx.waitUntil(
       decisionEngine
-        .evaluateCandidates(activePolicy, zoneId)
+        .evaluateZones(activePolicy, zones)
         .then(({ decisions, unbanned }) => {
           return Promise.all([
             telegramBot.notifyBannedIps(decisions),
