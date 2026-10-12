@@ -163,6 +163,13 @@ export class TelegramBotHandler {
       case "/set_ttl":
         await this.executeSetTtl(chatId, args[0]);
         break;
+      case "/scanner":
+        await this.executeToggleScanner(chatId, args[0]);
+        break;
+      case "/set_scanner_404":
+      case "/set_scanner":
+        await this.executeSetScanner404(chatId, args[0]);
+        break;
       case "/set_policy":
         await this.executeSetPolicyJson(chatId, text.replace(/^\/set_policy\s*/i, ""));
         break;
@@ -202,6 +209,8 @@ export class TelegramBotHandler {
       `• /allow &lt;IP/CIDR&gt; — Add to allowlist (e.g. <code>/allow 1.1.1.1</code>)\n` +
       `• /disallow &lt;IP/CIDR&gt; — Remove from allowlist\n` +
       `• /set_ttl &lt;hours|seconds&gt; — Set unban TTL (e.g. <code>/set_ttl 24h</code>)\n` +
+      `• /scanner [on|off] — Check or toggle ScannerGuard 404 hunter\n` +
+      `• /set_scanner_404 &lt;count&gt; — Set 404 error threshold (e.g. <code>/set_scanner_404 25</code>)\n` +
       `• /set_policy &lt;JSON&gt; — Upload raw policy JSON directly\n\n` +
       `<i>Use the quick action buttons below:</i>`;
 
@@ -260,6 +269,7 @@ export class TelegramBotHandler {
       `• Automated Unban (TTL): <b>${unbanTtlHours} Hours</b>\n` +
       `• Max List Ceiling: <b>${maxLimit} IPs</b>\n` +
       `• Allowlist Size: <b>${policy.allowlist?.length || 0} CIDRs</b>\n` +
+      `• ScannerGuard (404 Hunter): ${policy.scanner?.enabled !== false ? `<b>Active</b> (Limit: ${policy.scanner?.max404Threshold ?? 25} err)` : "<i>Disabled</i>"}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `⏱️ <i>Inspected: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
 
@@ -388,7 +398,11 @@ export class TelegramBotHandler {
         report += `<b>Blocked Threats:</b>\n`;
         for (const b of blocked) {
           const zoneTag = b.zoneName ? `[${b.zoneName}] ` : "";
-          report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — ${b.requestCount} reqs (Limit: ${b.threshold})\n`;
+          if (b.threatType === "SCANNER_404") {
+            report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🌪️ <b>${b.requestCount} x 404s</b> (Limit: ${b.threshold})\n`;
+          } else {
+            report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — ${b.requestCount} reqs (Limit: ${b.threshold})\n`;
+          }
         }
       } else {
         report += `<i>No threshold violations detected across any zone. All systems secure.</i>`;
@@ -724,6 +738,78 @@ export class TelegramBotHandler {
     await this.client.sendMessage(
       chatId,
       `✅ <b>Auto-Unban TTL Updated!</b>\nNew TTL: <b>${hours} Hours</b> (${seconds}s)\nBans older than ${hours}h will be pruned automatically.`
+    );
+  }
+
+  /**
+   * /scanner command: Toggles or checks status of ScannerGuard (404 Hunter)
+   */
+  private async executeToggleScanner(chatId: number, rawArg?: string): Promise<void> {
+    const policy = await this.getPolicy();
+    policy.scanner = policy.scanner || { enabled: true, max404Threshold: 25, windowSeconds: 300, action: "block" };
+
+    if (!rawArg) {
+      const isEnabled = policy.scanner.enabled !== false;
+      const th = policy.scanner.max404Threshold ?? 25;
+      const win = policy.scanner.windowSeconds ?? policy.windowSeconds ?? 300;
+      await this.client.sendMessage(
+        chatId,
+        `🌪️ <b>ScannerGuard Status:</b> ${isEnabled ? "🟢 <b>Active</b>" : "🔴 <b>Disabled</b>"}\n` +
+          `• 404 Limit Threshold: <b>${th} errors</b> / ${win}s\n` +
+          `• Mitigation Action: <b>${policy.scanner.action || "block"}</b>\n\n` +
+          `<i>Use <code>/scanner on</code> or <code>/scanner off</code> to toggle, or <code>/set_scanner_404 &lt;n&gt;</code> to adjust limit.</i>`
+      );
+      return;
+    }
+
+    const arg = rawArg.trim().toLowerCase();
+    if (arg === "on" || arg === "enable" || arg === "1") {
+      policy.scanner.enabled = true;
+    } else if (arg === "off" || arg === "disable" || arg === "0") {
+      policy.scanner.enabled = false;
+    } else {
+      await this.client.sendMessage(chatId, "⚠️ Usage: <code>/scanner [on|off]</code>");
+      return;
+    }
+
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update scanner setting: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>ScannerGuard Updated!</b>\nStatus: ${policy.scanner.enabled ? "🟢 <b>Enabled</b>" : "🔴 <b>Disabled</b>"}`
+    );
+  }
+
+  /**
+   * /set_scanner_404 command: Sets 404 error threshold for scanner detection
+   */
+  private async executeSetScanner404(chatId: number, rawVal?: string): Promise<void> {
+    const val = parseInt(rawVal || "", 10);
+    if (isNaN(val) || val <= 0) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/set_scanner_404 &lt;number&gt;</code>\nExample: <code>/set_scanner_404 25</code>"
+      );
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.scanner = policy.scanner || { enabled: true, max404Threshold: 25, windowSeconds: 300, action: "block" };
+    policy.scanner.max404Threshold = val;
+
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update 404 scanner threshold: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>404 Scanner Threshold Updated!</b>\nNew Limit: <b>${val} 404 errors</b> per window. IPs exceeding this will be blocked as vulnerability scanners.`
     );
   }
 
@@ -1138,13 +1224,21 @@ export class TelegramBotHandler {
           ? `🌐 <b>Zone ID:</b> <code>${d.zoneId}</code>\n`
           : "";
 
+        const isScanner = d.threatType === "SCANNER_404";
+        const title = isScanner
+          ? `🚨 <b>Auto Guard: Vulnerability Scanner Detected!</b>`
+          : `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>`;
+        const metricLine = isScanner
+          ? `🌪️ <b>404 Probes:</b> <b>${d.requestCount} not found errors</b> (Limit: ${d.threshold})\n🎯 <b>Classification:</b> <i>Automated Directory/Endpoint Scanner</i>\n`
+          : `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n`;
+
         const text =
-          `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>\n` +
+          `${title}\n` +
           `━━━━━━━━━━━━━━━━━━━━\n` +
           zoneLine +
           `🌐 <b>IP:</b> <code>${d.ip}</code>\n` +
           `🏳️ <b>Country:</b> ${d.country || "Unknown"}\n` +
-          `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n` +
+          metricLine +
           `🏷️ <b>Rank:</b> #${d.rank}\n` +
           `📝 <b>Reason:</b> <i>${d.reason}</i>\n` +
           `━━━━━━━━━━━━━━━━━━━━\n` +

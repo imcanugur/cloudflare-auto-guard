@@ -131,8 +131,50 @@ export class DecisionEngine {
           zoneName: zone.name,
           evaluated: candidates.length,
           blocked: blockedCount,
-          ignored: ignoredCount
+          ignored: ignoredCount,
+          scannersBlocked: 0
         });
+
+        // 2.b. Evaluate 404 Error Storm Scanners (Engine 1)
+        if (policy.scanner?.enabled !== false) {
+          const scannerWindow = policy.scanner?.windowSeconds ?? windowSeconds;
+          const scanners404 = await this.analyticsService.fetch404Scanners(zone.id, scannerWindow, 50);
+          metrics.increment("scanner_404_candidates", scanners404.length);
+
+          let scannersBlockedForZone = 0;
+          for (const candidate of scanners404) {
+            const isAlreadyBlocked =
+              this.blocker.isAlreadyBlocked(candidate.ip) ||
+              toBlockGlobal.some((b) => b.ip === candidate.ip);
+
+            const decision = CandidateEvaluator.evaluateScanner404({
+              ip: candidate.ip,
+              country: candidate.country,
+              asn: candidate.asn,
+              requestCount: candidate.requestCount,
+              rank: candidate.rank,
+              policy,
+              allowlistMatcher: this.allowlistMatcher,
+              isAlreadyBlocked,
+              zoneId: zone.id,
+              zoneName: zone.name
+            });
+
+            if (decision.action === "BLOCK") {
+              toBlockGlobal.push(decision);
+              scannersBlockedForZone++;
+              blockedCount++;
+            } else {
+              allDecisions.push(decision);
+            }
+          }
+
+          const summary = zoneSummaries[zoneSummaries.length - 1];
+          if (summary) {
+            summary.scannersBlocked = scannersBlockedForZone;
+            summary.blocked = blockedCount;
+          }
+        }
       } catch (err) {
         logger.error("ZONE_EVALUATION_FAILED", {
           zoneId: zone.id,
