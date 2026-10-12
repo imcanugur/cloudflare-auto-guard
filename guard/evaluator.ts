@@ -153,7 +153,119 @@ export class CandidateEvaluator {
       threshold: resolved.threshold,
       windowSeconds: resolved.windowSeconds,
       zoneId,
-      zoneName
+      zoneName,
+      threatType: "FLOOD"
+    };
+  }
+
+  /**
+   * Evaluates an IP generating excessive 404 Not Found error responses (Directory/Endpoint Scanner)
+   */
+  public static evaluateScanner404(ctx: CandidateEvaluationContext): GuardDecision {
+    const { ip, country, asn, requestCount, rank, policy, allowlistMatcher, isAlreadyBlocked, zoneId, zoneName } = ctx;
+    const scannerConfig = policy.scanner;
+    const windowSeconds = scannerConfig?.windowSeconds ?? policy.windowSeconds ?? 300;
+    const threshold = scannerConfig?.max404Threshold ?? 25;
+
+    // 1. Global Guard or Scanner disabled?
+    if (!policy.enabled || scannerConfig?.enabled === false) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.GLOBAL_DISABLED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_404"
+      };
+    }
+
+    // 2. Valid IP?
+    if (!isValidIp(ip)) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.INVALID_IP,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_404"
+      };
+    }
+
+    // 3. Allowlist check
+    if (allowlistMatcher.isAllowlisted(ip)) {
+      return {
+        action: "ALLOW",
+        reason: DecisionReason.ALLOWLISTED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_404"
+      };
+    }
+
+    // 4. Threshold check: Did 404 count exceed max404Threshold?
+    if (requestCount < threshold) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.BELOW_THRESHOLD,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_404"
+      };
+    }
+
+    // 5. Already blocked? (Idempotency)
+    if (isAlreadyBlocked) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.ALREADY_BLOCKED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_404"
+      };
+    }
+
+    // 6. Action block (or log if configured)
+    return {
+      action: scannerConfig?.action === "log" ? "IGNORE" : "BLOCK",
+      reason: DecisionReason.SCANNER_404_MATCH,
+      ip,
+      country,
+      asn,
+      requestCount,
+      rank,
+      threshold,
+      windowSeconds,
+      zoneId,
+      zoneName,
+      threatType: "SCANNER_404"
     };
   }
 }

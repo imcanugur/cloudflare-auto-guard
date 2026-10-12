@@ -195,6 +195,7 @@ export default {
         { command: "ban", description: "Manually block an IP: /ban <ip> [reason]" },
         { command: "unban", description: "Remove IP(s) from blocklist: /unban <ip1> [ip2]" },
         { command: "policy", description: "View active threshold and protection policy" },
+        { command: "scanner", description: "Toggle or check 404 vulnerability scanner hunter" },
         { command: "admins", description: "List authorized administrator accounts" },
         { command: "help", description: "Show interactive control panel and menu" }
       ]);
@@ -378,6 +379,7 @@ export default {
           status: "active",
           guard: "Cloudflare Auto Guard (Edge Engine)",
           telegramBot: !!env.TELEGRAM_BOT_TOKEN ? "enabled" : "disabled",
+          scannerGuard: activePolicy.scanner?.enabled !== false ? "active" : "disabled",
           monitoredZonesCount: configuredZones.length,
           monitoredZones: configuredZones.map((z) => z.name),
           sharedListId: env.CF_LIST_ID ? `${env.CF_LIST_ID.slice(0, 6)}...` : "NOT_CONFIGURED",

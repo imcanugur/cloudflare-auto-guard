@@ -27,6 +27,13 @@ export const UnbanPolicySchema = z.object({
   maxListSize: z.number().int().positive().optional().default(9000)
 }).optional();
 
+export const ScannerPolicySchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  max404Threshold: z.number().int().positive().optional().default(25),
+  windowSeconds: z.number().int().positive().optional().default(300),
+  action: z.enum(["block", "log"]).optional().default("block")
+}).optional();
+
 export const GuardPolicySchema = z.object({
   enabled: z.boolean().default(true),
   windowSeconds: z.number().int().positive().optional().default(300),
@@ -34,7 +41,8 @@ export const GuardPolicySchema = z.object({
   default: DefaultRuleSchema,
   countries: z.record(z.string(), CountryRuleSchema).optional().default({}),
   allowlist: z.array(z.string()).optional().default([]),
-  unban: UnbanPolicySchema
+  unban: UnbanPolicySchema,
+  scanner: ScannerPolicySchema
 });
 
 export type ValidatedGuardPolicy = z.infer<typeof GuardPolicySchema>;

@@ -35,5 +35,11 @@
     "enabled": true,
     "ttlSeconds": 86400,
     "maxListSize": 9000
+  },
+  "scanner": {
+    "enabled": true,
+    "max404Threshold": 25,
+    "windowSeconds": 300,
+    "action": "block"
   }
 }

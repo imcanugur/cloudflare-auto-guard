@@ -24,6 +24,13 @@ export interface UnbanPolicyConfig {
   maxListSize?: number;
 }
 
+export interface ScannerPolicyConfig {
+  enabled?: boolean;
+  max404Threshold?: number;
+  windowSeconds?: number;
+  action?: "block" | "log";
+}
+
 export interface GuardPolicy {
   enabled: boolean;
   windowSeconds?: number;
@@ -32,6 +39,7 @@ export interface GuardPolicy {
   countries?: Record<string, CountryPolicyRule>;
   allowlist?: string[];
   unban?: UnbanPolicyConfig;
+  scanner?: ScannerPolicyConfig;
 }
 
 export interface ResolvedPolicy {

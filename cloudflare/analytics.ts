@@ -107,4 +107,83 @@ export class CloudflareAnalyticsService {
       return [];
     }
   }
+
+  /**
+   * Queries Cloudflare GraphQL Analytics specifically for IPs generating 404 Not Found errors
+   */
+  public async fetch404Scanners(
+    zoneId: string,
+    windowSeconds = 300,
+    limit = 50
+  ): Promise<TrafficCandidate[]> {
+    const sinceDate = new Date(Date.now() - windowSeconds * 1000).toISOString();
+
+    const query = `
+      query Get404Scanners($zoneTag: String!, $since: Time!, $limit: Int!) {
+        viewer {
+          zones(filter: { zoneTag: $zoneTag }) {
+            httpRequestsAdaptiveGroups(
+              filter: {
+                datetime_geq: $since
+                edgeResponseStatus: 404
+              }
+              limit: $limit
+              orderBy: [count_DESC]
+            ) {
+              count
+              dimensions {
+                clientIP
+                clientCountryName
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await this.client.request<GraphQLAnalyticsResponse>("/graphql", {
+        method: "POST",
+        body: JSON.stringify({
+          query,
+          variables: {
+            zoneTag: zoneId,
+            since: sinceDate,
+            limit
+          }
+        })
+      });
+
+      if (response.errors && response.errors.length > 0) {
+        throw new Error(response.errors.map((e) => e.message).join(", "));
+      }
+
+      const groups = response.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups || [];
+
+      const candidates: TrafficCandidate[] = groups
+        .filter((g) => Boolean(g.dimensions.clientIP))
+        .map((g, index) => ({
+          ip: g.dimensions.clientIP,
+          country: (g.dimensions.clientCountryName || "XX").toUpperCase(),
+          requestCount: g.count,
+          rank: index + 1
+        }));
+
+      logger.info("ANALYTICS_404_SCANNERS_FETCHED", {
+        metadata: {
+          zoneId,
+          windowSeconds,
+          count: candidates.length
+        }
+      });
+
+      return candidates;
+    } catch (err) {
+      logger.error("ANALYTICS_404_SCANNERS_FETCH_FAILED", {
+        message: (err as Error).message,
+        metadata: { zoneId }
+      });
+      return [];
+    }
+  }
 }
