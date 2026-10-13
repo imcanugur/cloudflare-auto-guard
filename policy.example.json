@@ -40,6 +40,24 @@
     "enabled": true,
     "max404Threshold": 25,
     "windowSeconds": 300,
+    "enableHoneypot": true,
+    "trapPaths": [
+      "/.env",
+      "/.git",
+      "/.git/config",
+      "/.aws/credentials",
+      "/wp-login.php",
+      "/xmlrpc.php",
+      "/wp-config.php",
+      "/phpmyadmin",
+      "/pma",
+      "/adminer.php",
+      "/actuator",
+      "/actuator/health",
+      "/shell.php",
+      "/backup.sql",
+      "/dump.sql"
+    ],
     "action": "block"
   }
 }

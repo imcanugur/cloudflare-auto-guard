@@ -170,6 +170,15 @@ export class TelegramBotHandler {
       case "/set_scanner":
         await this.executeSetScanner404(chatId, args[0]);
         break;
+      case "/traps":
+        await this.executeListTraps(chatId);
+        break;
+      case "/add_trap":
+        await this.executeAddTrap(chatId, args[0]);
+        break;
+      case "/remove_trap":
+        await this.executeRemoveTrap(chatId, args[0]);
+        break;
       case "/set_policy":
         await this.executeSetPolicyJson(chatId, text.replace(/^\/set_policy\s*/i, ""));
         break;
@@ -208,9 +217,11 @@ export class TelegramBotHandler {
       `• /remove_country &lt;CODE&gt; — Delete country override (e.g. <code>/remove_country RU</code>)\n` +
       `• /allow &lt;IP/CIDR&gt; — Add to allowlist (e.g. <code>/allow 1.1.1.1</code>)\n` +
       `• /disallow &lt;IP/CIDR&gt; — Remove from allowlist\n` +
-      `• /set_ttl &lt;hours|seconds&gt; — Set unban TTL (e.g. <code>/set_ttl 24h</code>)\n` +
       `• /scanner [on|off] — Check or toggle ScannerGuard 404 hunter\n` +
       `• /set_scanner_404 &lt;count&gt; — Set 404 error threshold (e.g. <code>/set_scanner_404 25</code>)\n` +
+      `• /traps — View active honeypot canary trap paths\n` +
+      `• /add_trap &lt;path&gt; — Add sensitive endpoint to traps (e.g. <code>/add_trap /.env</code>)\n` +
+      `• /remove_trap &lt;path&gt; — Remove endpoint from traps\n` +
       `• /set_policy &lt;JSON&gt; — Upload raw policy JSON directly\n\n` +
       `<i>Use the quick action buttons below:</i>`;
 
@@ -270,6 +281,7 @@ export class TelegramBotHandler {
       `• Max List Ceiling: <b>${maxLimit} IPs</b>\n` +
       `• Allowlist Size: <b>${policy.allowlist?.length || 0} CIDRs</b>\n` +
       `• ScannerGuard (404 Hunter): ${policy.scanner?.enabled !== false ? `<b>Active</b> (Limit: ${policy.scanner?.max404Threshold ?? 25} err)` : "<i>Disabled</i>"}\n` +
+      `• Canary Honeypot: ${policy.scanner?.enabled !== false && (policy.scanner?.trapPaths?.length || 0) > 0 ? `<b>Active</b> (${policy.scanner?.trapPaths?.length} traps)` : "<i>Disabled</i>"}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `⏱️ <i>Inspected: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
 
@@ -398,7 +410,10 @@ export class TelegramBotHandler {
         report += `<b>Blocked Threats:</b>\n`;
         for (const b of blocked) {
           const zoneTag = b.zoneName ? `[${b.zoneName}] ` : "";
-          if (b.threatType === "SCANNER_404") {
+          if (b.threatType === "SCANNER_TRAP") {
+            const probe = b.probePath ? ` [${b.probePath}]` : "";
+            report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🪤 <b>Canary Trap${probe}</b>\n`;
+          } else if (b.threatType === "SCANNER_404") {
             report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🌪️ <b>${b.requestCount} x 404s</b> (Limit: ${b.threshold})\n`;
           } else {
             report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — ${b.requestCount} reqs (Limit: ${b.threshold})\n`;
@@ -814,6 +829,105 @@ export class TelegramBotHandler {
   }
 
   /**
+   * /traps command: Lists active canary/honeypot trap paths
+   */
+  private async executeListTraps(chatId: number): Promise<void> {
+    const policy = await this.getPolicy();
+    const traps = policy.scanner?.trapPaths || [];
+
+    if (traps.length === 0) {
+      await this.client.sendMessage(
+        chatId,
+        "🪤 <b>No Canary Trap Paths Configured!</b>\nAdd paths with <code>/add_trap &lt;path&gt;</code>"
+      );
+      return;
+    }
+
+    const formatted = traps.map((p, idx) => `${idx + 1}. <code>${this.escapeHtml(p)}</code>`).join("\n");
+    await this.client.sendMessage(
+      chatId,
+      `🪤 <b>Active Canary Trap Paths (${traps.length}):</b>\n\n${formatted}\n\n` +
+        `<i>Any IP hitting these endpoints will be blocked on 1 single probe (Zero Tolerance).</i>\n` +
+        `<i>Add: <code>/add_trap &lt;path&gt;</code> | Remove: <code>/remove_trap &lt;path&gt;</code></i>`
+    );
+  }
+
+  /**
+   * /add_trap command: Adds a sensitive endpoint to the honeypot list
+   */
+  private async executeAddTrap(chatId: number, rawPath?: string): Promise<void> {
+    if (!rawPath || !rawPath.trim()) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/add_trap &lt;path&gt;</code>\nExample: <code>/add_trap /.env.production</code>"
+      );
+      return;
+    }
+
+    let p = rawPath.trim();
+    if (!p.startsWith("/")) p = "/" + p;
+
+    const policy = await this.getPolicy();
+    policy.scanner = policy.scanner || { enabled: true, max404Threshold: 25, windowSeconds: 300, action: "block" };
+    policy.scanner.trapPaths = policy.scanner.trapPaths || [];
+
+    if (policy.scanner.trapPaths.includes(p)) {
+      await this.client.sendMessage(chatId, `ℹ️ Path <code>${this.escapeHtml(p)}</code> is already in the trap list.`);
+      return;
+    }
+
+    policy.scanner.trapPaths.push(p);
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to add trap path: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Canary Trap Added!</b>\nPath: <code>${this.escapeHtml(p)}</code>\nTotal traps: <b>${policy.scanner.trapPaths.length}</b>`
+    );
+  }
+
+  /**
+   * /remove_trap command: Removes a path from the honeypot list
+   */
+  private async executeRemoveTrap(chatId: number, rawPath?: string): Promise<void> {
+    if (!rawPath || !rawPath.trim()) {
+      await this.client.sendMessage(
+        chatId,
+        "⚠️ Usage: <code>/remove_trap &lt;path&gt;</code>\nExample: <code>/remove_trap /.env</code>"
+      );
+      return;
+    }
+
+    let p = rawPath.trim();
+    if (!p.startsWith("/")) p = "/" + p;
+
+    const policy = await this.getPolicy();
+    policy.scanner = policy.scanner || { enabled: true, max404Threshold: 25, windowSeconds: 300, action: "block" };
+    policy.scanner.trapPaths = policy.scanner.trapPaths || [];
+
+    const idx = policy.scanner.trapPaths.indexOf(p);
+    if (idx === -1) {
+      await this.client.sendMessage(chatId, `ℹ️ Path <code>${this.escapeHtml(p)}</code> not found in trap list.`);
+      return;
+    }
+
+    policy.scanner.trapPaths.splice(idx, 1);
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to remove trap path: ${res.error}`);
+      return;
+    }
+
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Canary Trap Removed!</b>\nPath: <code>${this.escapeHtml(p)}</code>\nTotal traps: <b>${policy.scanner.trapPaths.length}</b>`
+    );
+  }
+
+  /**
    * /set_policy command: Uploads raw JSON policy
    */
   private async executeSetPolicyJson(chatId: number, rawJson?: string): Promise<void> {
@@ -1224,13 +1338,25 @@ export class TelegramBotHandler {
           ? `🌐 <b>Zone ID:</b> <code>${d.zoneId}</code>\n`
           : "";
 
+        const isTrap = d.threatType === "SCANNER_TRAP";
         const isScanner = d.threatType === "SCANNER_404";
-        const title = isScanner
+        const title = isTrap
+          ? `🚨 <b>Auto Guard: Canary Honeypot Triggered!</b>`
+          : isScanner
           ? `🚨 <b>Auto Guard: Vulnerability Scanner Detected!</b>`
           : `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>`;
-        const metricLine = isScanner
-          ? `🌪️ <b>404 Probes:</b> <b>${d.requestCount} not found errors</b> (Limit: ${d.threshold})\n🎯 <b>Classification:</b> <i>Automated Directory/Endpoint Scanner</i>\n`
-          : `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n`;
+
+        let metricLine = `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n`;
+        if (isTrap) {
+          const probeText = d.probePath ? `<code>${this.escapeHtml(d.probePath)}</code>` : "<i>Sensitive Trap Path</i>";
+          metricLine =
+            `🪤 <b>Trapped Probe:</b> ${probeText}\n` +
+            `🎯 <b>Classification:</b> <i>Sensitive File Reconnaissance (Canary Trap)</i>\n`;
+        } else if (isScanner) {
+          metricLine =
+            `🌪️ <b>404 Probes:</b> <b>${d.requestCount} not found errors</b> (Limit: ${d.threshold})\n` +
+            `🎯 <b>Classification:</b> <i>Automated Directory/Endpoint Scanner</i>\n`;
+        }
 
         const text =
           `${title}\n` +

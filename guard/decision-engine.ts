@@ -169,6 +169,43 @@ export class DecisionEngine {
             }
           }
 
+          // 2.c. Evaluate Canary / Sensitive Path Trap Probes (Engine 2)
+          const trapPaths = policy.scanner?.trapPaths;
+          if (trapPaths && trapPaths.length > 0) {
+            const trapProbes = await this.analyticsService.fetchTrapProbes(zone.id, scannerWindow, trapPaths, 50);
+            metrics.increment("canary_trap_candidates", trapProbes.length);
+
+            for (const candidate of trapProbes) {
+              const isAlreadyBlocked =
+                this.blocker.isAlreadyBlocked(candidate.ip) ||
+                toBlockGlobal.some((b) => b.ip === candidate.ip);
+
+              const decision = CandidateEvaluator.evaluateScannerTrap(
+                {
+                  ip: candidate.ip,
+                  country: candidate.country,
+                  asn: candidate.asn,
+                  requestCount: candidate.requestCount,
+                  rank: candidate.rank,
+                  policy,
+                  allowlistMatcher: this.allowlistMatcher,
+                  isAlreadyBlocked,
+                  zoneId: zone.id,
+                  zoneName: zone.name
+                },
+                candidate.probePath
+              );
+
+              if (decision.action === "BLOCK") {
+                toBlockGlobal.push(decision);
+                scannersBlockedForZone++;
+                blockedCount++;
+              } else {
+                allDecisions.push(decision);
+              }
+            }
+          }
+
           const summary = zoneSummaries[zoneSummaries.length - 1];
           if (summary) {
             summary.scannersBlocked = scannersBlockedForZone;

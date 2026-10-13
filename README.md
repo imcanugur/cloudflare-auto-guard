@@ -11,6 +11,7 @@ High-frequency malicious traffic, DDoS probes, and scrapers often display distin
 ### Key Highlights
 * **Zero External Dependencies**: No Redis, PostgreSQL, Node.js VPS, Docker containers, or third-party servers required. Everything runs 100% natively on Cloudflare.
 * **Multi-Zone Protection on Shared List**: Protect 1 or dozens of domains simultaneously (`CF_ZONES="domain1.com:id1 | domain2.com:id2"`) using a single, unified 10,000-item edge IP list.
+* **ScannerGuard (Vulnerability & Directory Scanner Hunter)**: Edge-native 404 error storm detector that captures opportunistic CVE probes, directory brute-forcers (Gobuster, Nikto), and reconnaissance bots before they find exposed files.
 * **Edge GraphQL Analytics**: Queries live edge traffic directly via Cloudflare Analytics API (`httpRequestsAdaptiveGroups`) per protected zone.
 * **High-Performance Bulk Batching**: Applies bans in a single bulk API call (up to 1,000 IPs per request), completely preventing subrequest limit errors.
 * **Automated Unban (TTL & 10k Limit Protection)**: Automatically expires and prunes old bans after a configurable TTL (e.g., 24 hours) and applies FIFO pruning when approaching Cloudflare's 10,000 list item limit.
@@ -103,6 +104,12 @@ Policies can be updated at runtime via `POST /__guard/policy` and are persisted 
     "enabled": true,
     "ttlSeconds": 86400,
     "maxListSize": 9000
+  },
+  "scanner": {
+    "enabled": true,
+    "max404Threshold": 25,
+    "windowSeconds": 300,
+    "action": "block"
   }
 }
 ```
@@ -228,6 +235,11 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/allow <ip/cidr>` | Whitelists an IP or CIDR subnet | `/allow 1.1.1.1` |
 | `/disallow <ip/cidr>` | Removes an IP or CIDR from allowlist | `/disallow 1.1.1.1` |
 | `/set_ttl <hours>` | Updates automated unban TTL | `/set_ttl 24h` |
+| `/scanner [on\|off]` | Checks or toggles ScannerGuard 404 hunter | `/scanner on` |
+| `/set_scanner_404 <n>` | Configures 404 error storm detection threshold | `/set_scanner_404 25` |
+| `/traps` | Lists active canary/honeypot trap paths | `/traps` |
+| `/add_trap <path>` | Adds an endpoint to canary traps | `/add_trap /.env.local` |
+| `/remove_trap <path>` | Removes an endpoint from canary traps | `/remove_trap /.env` |
 | `/set_policy <json>` | Directly sets the full JSON policy | `/set_policy {...}` |
 | `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |
@@ -236,8 +248,9 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 
 ### 🚨 2. Real-Time Push Alerts with 1-Click Unban
 
-Whenever the automated cron detects high-frequency attacks or policy violations, it instantly pushes a card directly to your Telegram chat:
+Whenever the automated cron detects high-frequency attacks, flood thresholds, directory scans, or canary honeypot triggers, it instantly pushes a card directly to your Telegram chat:
 
+#### A. High-Frequency Traffic Threat Alert
 ```text
 🚨 Auto Guard: Threat Detected & Mitigated!
 ━━━━━━━━━━━━━━━━━━━━
@@ -251,6 +264,40 @@ Whenever the automated cron detects high-frequency attacks or policy violations,
 ⏰ 2026-10-02 15:20:00 UTC
 
 [ 🔓 Unban (185.220.101.5) ]  <-- (Interactive Inline Button)
+```
+
+#### B. Vulnerability Scanner / 404 Storm Threat Alert
+```text
+🚨 Auto Guard: Vulnerability Scanner Detected!
+━━━━━━━━━━━━━━━━━━━━
+🌐 Target Zone: example.com
+🏴‍☠️ Attacker IP: 185.220.101.5
+🏳️ Country: Russia (RU)
+🌪️ 404 Probes: 42 not found errors (Limit: 25)
+🎯 Classification: Automated Directory/Endpoint Scanner
+🏷️ Rank: #1
+📝 Reason: SCANNER_404_MATCH
+━━━━━━━━━━━━━━━━━━━━
+⏰ 2026-10-12 15:30:00 UTC
+
+[ 🔓 Unban (185.220.101.5) ]  <-- (Interactive Inline Button)
+```
+
+#### C. Canary Honeypot / Sensitive Path Trap Alert
+```text
+🚨 Auto Guard: Canary Honeypot Triggered!
+━━━━━━━━━━━━━━━━━━━━
+🌐 Target Zone: example.com
+🏴‍☠️ Attacker IP: 198.51.100.4
+🏳️ Country: Russia (RU)
+🪤 Trapped Probe: /.env
+🎯 Classification: Sensitive File Reconnaissance (Canary Trap)
+🏷️ Rank: #1
+📝 Reason: SCANNER_TRAP_MATCH
+━━━━━━━━━━━━━━━━━━━━
+⏰ 2026-10-12 16:30:00 UTC
+
+[ 🔓 Unban (198.51.100.4) ]  <-- (Interactive Inline Button)
 ```
 
 > **Single-Click Unban**: Tapping the **[ 🔓 Unban ]** button immediately invokes the Cloudflare Rules Lists API, deletes the IP, purges the local cache, and edits the Telegram card to:  
@@ -323,6 +370,8 @@ flush - Flush and unban all currently blocked IPs
 ban - Manually block an IP: /ban <ip> [reason]
 unban - Remove IP(s) from blocklist: /unban <ip1> [ip2]
 policy - View active threshold and protection policy
+scanner - Check or toggle 404 vulnerability scanner hunter
+traps - View active canary honeypot trap paths
 admins - List authorized administrator accounts
 help - Show interactive control panel and menu
 ```

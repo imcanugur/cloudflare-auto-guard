@@ -31,6 +31,24 @@ export const ScannerPolicySchema = z.object({
   enabled: z.boolean().optional().default(true),
   max404Threshold: z.number().int().positive().optional().default(25),
   windowSeconds: z.number().int().positive().optional().default(300),
+  trapPaths: z.array(z.string()).optional().default([
+    "/.env",
+    "/.git",
+    "/.git/config",
+    "/.aws/credentials",
+    "/wp-login.php",
+    "/xmlrpc.php",
+    "/wp-config.php",
+    "/phpmyadmin",
+    "/pma",
+    "/adminer.php",
+    "/actuator",
+    "/actuator/health",
+    "/shell.php",
+    "/backup.sql",
+    "/dump.sql"
+  ]),
+  enableHoneypot: z.boolean().optional().default(true),
   action: z.enum(["block", "log"]).optional().default("block")
 }).optional();
 

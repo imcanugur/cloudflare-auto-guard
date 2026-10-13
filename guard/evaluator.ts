@@ -268,4 +268,105 @@ export class CandidateEvaluator {
       threatType: "SCANNER_404"
     };
   }
+
+  /**
+   * Evaluates an IP that probed a sensitive Canary/Honeypot trap path (Zero-Tolerance Block)
+   */
+  public static evaluateScannerTrap(
+    ctx: CandidateEvaluationContext,
+    probePath?: string
+  ): GuardDecision {
+    const { ip, country, asn, requestCount, rank, policy, allowlistMatcher, isAlreadyBlocked, zoneId, zoneName } = ctx;
+    const scannerConfig = policy.scanner;
+    const windowSeconds = scannerConfig?.windowSeconds ?? policy.windowSeconds ?? 300;
+
+    // 1. Global Guard or Scanner disabled?
+    if (!policy.enabled || scannerConfig?.enabled === false) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.GLOBAL_DISABLED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold: 1,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_TRAP",
+        probePath
+      };
+    }
+
+    // 2. Valid IP?
+    if (!isValidIp(ip)) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.INVALID_IP,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold: 1,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_TRAP",
+        probePath
+      };
+    }
+
+    // 3. Allowlist check
+    if (allowlistMatcher.isAllowlisted(ip)) {
+      return {
+        action: "ALLOW",
+        reason: DecisionReason.ALLOWLISTED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold: 1,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_TRAP",
+        probePath
+      };
+    }
+
+    // 4. Already blocked? (Idempotency)
+    if (isAlreadyBlocked) {
+      return {
+        action: "IGNORE",
+        reason: DecisionReason.ALREADY_BLOCKED,
+        ip,
+        country,
+        requestCount,
+        rank,
+        threshold: 1,
+        windowSeconds,
+        zoneId,
+        zoneName,
+        threatType: "SCANNER_TRAP",
+        probePath
+      };
+    }
+
+    // 5. Zero-tolerance block on honeypot trap hits
+    return {
+      action: scannerConfig?.action === "log" ? "IGNORE" : "BLOCK",
+      reason: DecisionReason.SCANNER_TRAP_MATCH,
+      ip,
+      country,
+      asn,
+      requestCount,
+      rank,
+      threshold: 1,
+      windowSeconds,
+      zoneId,
+      zoneName,
+      threatType: "SCANNER_TRAP",
+      probePath
+    };
+  }
 }
