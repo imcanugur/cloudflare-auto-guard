@@ -14,12 +14,13 @@ export const DecisionReason = {
   ALREADY_BLOCKED: "ALREADY_BLOCKED",
   POLICY_MATCH: "POLICY_MATCH",
   SCANNER_404_MATCH: "SCANNER_404_MATCH",
+  SCANNER_TRAP_MATCH: "SCANNER_TRAP_MATCH",
   BLOCK_FAILED: "BLOCK_FAILED"
 } as const;
 
 export type DecisionReasonCode = typeof DecisionReason[keyof typeof DecisionReason];
 
-export type ThreatType = "FLOOD" | "SCANNER_404";
+export type ThreatType = "FLOOD" | "SCANNER_404" | "SCANNER_TRAP";
 
 export interface GuardDecision {
   action: GuardAction;
@@ -34,4 +35,5 @@ export interface GuardDecision {
   zoneId?: string;
   zoneName?: string;
   threatType?: ThreatType;
+  probePath?: string;
 }

@@ -8,6 +8,7 @@
  */
 import { DEFAULT_GUARD_POLICY } from "@/config/defaults";
 import { GuardPolicy } from "@/domain/models/policy";
+import { DecisionReason, GuardDecision } from "@/domain/models/decision";
 import { safeValidatePolicy } from "@/config/policy-schema";
 import { DecisionEngine } from "@/guard/decision-engine";
 import { Blocker } from "@/guard/blocker";
@@ -196,6 +197,7 @@ export default {
         { command: "unban", description: "Remove IP(s) from blocklist: /unban <ip1> [ip2]" },
         { command: "policy", description: "View active threshold and protection policy" },
         { command: "scanner", description: "Toggle or check 404 vulnerability scanner hunter" },
+        { command: "traps", description: "View and manage honeypot canary trap paths" },
         { command: "admins", description: "List authorized administrator accounts" },
         { command: "help", description: "Show interactive control panel and menu" }
       ]);
@@ -255,6 +257,57 @@ export default {
 
     if (activePolicy.allowlist && activePolicy.allowlist.length > 0) {
       allowlistMatcher.update(activePolicy.allowlist);
+    }
+
+    // 3.5. Live Real-Time Canary / Honeypot Trap Interceptor (Engine 2)
+    const trapPaths = activePolicy.scanner?.trapPaths || [];
+    const isTrapHit =
+      activePolicy.scanner?.enabled !== false &&
+      activePolicy.scanner?.enableHoneypot !== false &&
+      trapPaths.length > 0 &&
+      trapPaths.some(
+        (tp) =>
+          url.pathname.toLowerCase() === tp.toLowerCase() ||
+          url.pathname.toLowerCase().startsWith(tp.toLowerCase() + "/")
+      );
+
+    if (isTrapHit) {
+      const clientIp =
+        request.headers.get("CF-Connecting-IP") ||
+        request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim();
+      const country = (request.headers.get("CF-IPCountry") || "XX").toUpperCase();
+
+      if (clientIp && !allowlistMatcher.isAllowlisted(clientIp)) {
+        const { blocker } = createServices(env);
+        const decision: GuardDecision = {
+          action: "BLOCK",
+          reason: DecisionReason.SCANNER_TRAP_MATCH,
+          ip: clientIp,
+          country,
+          requestCount: 1,
+          rank: 1,
+          threshold: 1,
+          windowSeconds: activePolicy.scanner?.windowSeconds ?? 300,
+          threatType: "SCANNER_TRAP",
+          probePath: url.pathname,
+          zoneName: url.hostname
+        };
+
+        ctx.waitUntil(
+          Promise.all([
+            blocker.executeBlockBatch([decision]),
+            telegramBot.notifyBannedIps([decision])
+          ])
+        );
+
+        logger.warn("CANARY_TRAP_TRIGGERED", {
+          ip: clientIp,
+          path: url.pathname,
+          host: url.hostname
+        });
+      }
+
+      return new Response("Not Found", { status: 404 });
     }
 
     // 4. Policy View & Upload / Mutation API endpoint (cURL)
@@ -380,6 +433,7 @@ export default {
           guard: "Cloudflare Auto Guard (Edge Engine)",
           telegramBot: !!env.TELEGRAM_BOT_TOKEN ? "enabled" : "disabled",
           scannerGuard: activePolicy.scanner?.enabled !== false ? "active" : "disabled",
+          canaryTrapsCount: (activePolicy.scanner?.trapPaths || []).length,
           monitoredZonesCount: configuredZones.length,
           monitoredZones: configuredZones.map((z) => z.name),
           sharedListId: env.CF_LIST_ID ? `${env.CF_LIST_ID.slice(0, 6)}...` : "NOT_CONFIGURED",

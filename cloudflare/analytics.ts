@@ -15,12 +15,17 @@ interface GraphQLAnalyticsResponse {
             clientIP: string;
             clientCountryName: string;
             clientASNDescription?: string;
+            clientRequestPath?: string;
           };
         }>;
       }>;
     };
   };
   errors?: Array<{ message: string }>;
+}
+
+export interface TrapCandidate extends TrafficCandidate {
+  probePath?: string;
 }
 
 export class CloudflareAnalyticsService {
@@ -180,6 +185,93 @@ export class CloudflareAnalyticsService {
       return candidates;
     } catch (err) {
       logger.error("ANALYTICS_404_SCANNERS_FETCH_FAILED", {
+        message: (err as Error).message,
+        metadata: { zoneId }
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Queries Cloudflare GraphQL Analytics for IPs that probed sensitive canary trap paths
+   */
+  public async fetchTrapProbes(
+    zoneId: string,
+    windowSeconds = 300,
+    trapPaths: string[] = [],
+    limit = 50
+  ): Promise<TrapCandidate[]> {
+    if (!trapPaths || trapPaths.length === 0) {
+      return [];
+    }
+
+    const sinceDate = new Date(Date.now() - windowSeconds * 1000).toISOString();
+
+    const query = `
+      query GetTrapProbes($zoneTag: String!, $since: Time!, $paths: [String!]!, $limit: Int!) {
+        viewer {
+          zones(filter: { zoneTag: $zoneTag }) {
+            httpRequestsAdaptiveGroups(
+              filter: {
+                datetime_geq: $since
+                clientRequestPath_in: $paths
+              }
+              limit: $limit
+              orderBy: [count_DESC]
+            ) {
+              count
+              dimensions {
+                clientIP
+                clientCountryName
+                clientRequestPath
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await this.client.request<GraphQLAnalyticsResponse>("/graphql", {
+        method: "POST",
+        body: JSON.stringify({
+          query,
+          variables: {
+            zoneTag: zoneId,
+            since: sinceDate,
+            paths: trapPaths,
+            limit
+          }
+        })
+      });
+
+      if (response.errors && response.errors.length > 0) {
+        throw new Error(response.errors.map((e) => e.message).join(", "));
+      }
+
+      const groups = response.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups || [];
+
+      const candidates: TrapCandidate[] = groups
+        .filter((g) => Boolean(g.dimensions.clientIP))
+        .map((g, index) => ({
+          ip: g.dimensions.clientIP,
+          country: (g.dimensions.clientCountryName || "XX").toUpperCase(),
+          requestCount: g.count,
+          rank: index + 1,
+          probePath: g.dimensions.clientRequestPath
+        }));
+
+      logger.info("ANALYTICS_TRAP_PROBES_FETCHED", {
+        metadata: {
+          zoneId,
+          windowSeconds,
+          count: candidates.length
+        }
+      });
+
+      return candidates;
+    } catch (err) {
+      logger.error("ANALYTICS_TRAP_PROBES_FETCH_FAILED", {
         message: (err as Error).message,
         metadata: { zoneId }
       });

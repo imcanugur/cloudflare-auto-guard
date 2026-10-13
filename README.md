@@ -237,6 +237,9 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/set_ttl <hours>` | Updates automated unban TTL | `/set_ttl 24h` |
 | `/scanner [on\|off]` | Checks or toggles ScannerGuard 404 hunter | `/scanner on` |
 | `/set_scanner_404 <n>` | Configures 404 error storm detection threshold | `/set_scanner_404 25` |
+| `/traps` | Lists active canary/honeypot trap paths | `/traps` |
+| `/add_trap <path>` | Adds an endpoint to canary traps | `/add_trap /.env.local` |
+| `/remove_trap <path>` | Removes an endpoint from canary traps | `/remove_trap /.env` |
 | `/set_policy <json>` | Directly sets the full JSON policy | `/set_policy {...}` |
 | `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |
@@ -245,7 +248,7 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 
 ### 🚨 2. Real-Time Push Alerts with 1-Click Unban
 
-Whenever the automated cron detects high-frequency attacks, flood thresholds, or automated vulnerability scanners, it instantly pushes a card directly to your Telegram chat:
+Whenever the automated cron detects high-frequency attacks, flood thresholds, directory scans, or canary honeypot triggers, it instantly pushes a card directly to your Telegram chat:
 
 #### A. High-Frequency Traffic Threat Alert
 ```text
@@ -278,6 +281,23 @@ Whenever the automated cron detects high-frequency attacks, flood thresholds, or
 ⏰ 2026-10-12 15:30:00 UTC
 
 [ 🔓 Unban (185.220.101.5) ]  <-- (Interactive Inline Button)
+```
+
+#### C. Canary Honeypot / Sensitive Path Trap Alert
+```text
+🚨 Auto Guard: Canary Honeypot Triggered!
+━━━━━━━━━━━━━━━━━━━━
+🌐 Target Zone: example.com
+🏴‍☠️ Attacker IP: 198.51.100.4
+🏳️ Country: Russia (RU)
+🪤 Trapped Probe: /.env
+🎯 Classification: Sensitive File Reconnaissance (Canary Trap)
+🏷️ Rank: #1
+📝 Reason: SCANNER_TRAP_MATCH
+━━━━━━━━━━━━━━━━━━━━
+⏰ 2026-10-12 16:30:00 UTC
+
+[ 🔓 Unban (198.51.100.4) ]  <-- (Interactive Inline Button)
 ```
 
 > **Single-Click Unban**: Tapping the **[ 🔓 Unban ]** button immediately invokes the Cloudflare Rules Lists API, deletes the IP, purges the local cache, and edits the Telegram card to:  
@@ -351,6 +371,7 @@ ban - Manually block an IP: /ban <ip> [reason]
 unban - Remove IP(s) from blocklist: /unban <ip1> [ip2]
 policy - View active threshold and protection policy
 scanner - Check or toggle 404 vulnerability scanner hunter
+traps - View active canary honeypot trap paths
 admins - List authorized administrator accounts
 help - Show interactive control panel and menu
 ```

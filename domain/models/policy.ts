@@ -28,6 +28,8 @@ export interface ScannerPolicyConfig {
   enabled?: boolean;
   max404Threshold?: number;
   windowSeconds?: number;
+  trapPaths?: string[];
+  enableHoneypot?: boolean;
   action?: "block" | "log";
 }
 
