@@ -58,6 +58,19 @@ export class TelegramBotHandler {
   }
 
   /**
+   * Safely escapes special HTML characters for Telegram HTML parse_mode
+   */
+  private escapeHtml(str: string): string {
+    if (!str) return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  /**
    * Safely validates and persists a policy update
    */
   private async savePolicySafely(policy: GuardPolicy): Promise<{ success: boolean; error?: string }> {
@@ -1330,51 +1343,94 @@ export class TelegramBotHandler {
     const newlyBlocked = decisions.filter((d) => d.action === "BLOCK");
     if (newlyBlocked.length === 0 || this.adminChatIds.size === 0) return;
 
-    for (const adminId of this.adminChatIds) {
-      for (const d of newlyBlocked) {
-        const zoneLine = d.zoneName
-          ? `🌐 <b>Target Zone:</b> <code>${d.zoneName}</code>\n`
-          : d.zoneId
-          ? `🌐 <b>Zone ID:</b> <code>${d.zoneId}</code>\n`
-          : "";
+    // To prevent exceeding Cloudflare subrequest limits (50 subrequests per invocation),
+    // send individual cards only if <= 3 items are blocked.
+    // When > 3 items are blocked, consolidate into a single executive digest per admin.
+    if (newlyBlocked.length <= 3) {
+      for (const adminId of this.adminChatIds) {
+        for (const d of newlyBlocked) {
+          const zoneLine = d.zoneName
+            ? `🌐 <b>Target Zone:</b> <code>${this.escapeHtml(d.zoneName)}</code>\n`
+            : d.zoneId
+            ? `🌐 <b>Zone ID:</b> <code>${this.escapeHtml(d.zoneId)}</code>\n`
+            : "";
 
-        const isTrap = d.threatType === "SCANNER_TRAP";
-        const isScanner = d.threatType === "SCANNER_404";
-        const title = isTrap
-          ? `🚨 <b>Auto Guard: Canary Honeypot Triggered!</b>`
-          : isScanner
-          ? `🚨 <b>Auto Guard: Vulnerability Scanner Detected!</b>`
-          : `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>`;
+          const isTrap = d.threatType === "SCANNER_TRAP";
+          const isScanner = d.threatType === "SCANNER_404";
+          const title = isTrap
+            ? `🚨 <b>Auto Guard: Canary Honeypot Triggered!</b>`
+            : isScanner
+            ? `🚨 <b>Auto Guard: Vulnerability Scanner Detected!</b>`
+            : `🚨 <b>Auto Guard: Threat Detected & Mitigated!</b>`;
 
-        let metricLine = `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n`;
-        if (isTrap) {
-          const probeText = d.probePath ? `<code>${this.escapeHtml(d.probePath)}</code>` : "<i>Sensitive Trap Path</i>";
-          metricLine =
-            `🪤 <b>Trapped Probe:</b> ${probeText}\n` +
-            `🎯 <b>Classification:</b> <i>Sensitive File Reconnaissance (Canary Trap)</i>\n`;
-        } else if (isScanner) {
-          metricLine =
-            `🌪️ <b>404 Probes:</b> <b>${d.requestCount} not found errors</b> (Limit: ${d.threshold})\n` +
-            `🎯 <b>Classification:</b> <i>Automated Directory/Endpoint Scanner</i>\n`;
+          let metricLine = `📊 <b>Traffic:</b> <b>${d.requestCount} requests</b> (Threshold: ${d.threshold})\n`;
+          if (isTrap) {
+            const probeText = d.probePath ? `<code>${this.escapeHtml(d.probePath)}</code>` : "<i>Sensitive Trap Path</i>";
+            metricLine =
+              `🪤 <b>Trapped Probe:</b> ${probeText}\n` +
+              `🎯 <b>Classification:</b> <i>Sensitive File Reconnaissance (Canary Trap)</i>\n`;
+          } else if (isScanner) {
+            metricLine =
+              `🌪️ <b>404 Probes:</b> <b>${d.requestCount} not found errors</b> (Limit: ${d.threshold})\n` +
+              `🎯 <b>Classification:</b> <i>Automated Directory/Endpoint Scanner</i>\n`;
+          }
+
+          const text =
+            `${title}\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            zoneLine +
+            `🌐 <b>IP:</b> <code>${d.ip}</code>\n` +
+            `🏳️ <b>Country:</b> ${this.escapeHtml(d.country || "Unknown")}\n` +
+            metricLine +
+            `🏷️ <b>Rank:</b> #${d.rank}\n` +
+            `📝 <b>Reason:</b> <i>${this.escapeHtml(d.reason)}</i>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+
+          const keyboard: TelegramInlineKeyboardMarkup = {
+            inline_keyboard: [[{ text: `🔓 Unban (${d.ip})`, callback_data: `unban:${d.ip}` }]]
+          };
+
+          try {
+            await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+          } catch {
+            // Error isolated to prevent breaking the worker execution
+          }
+        }
+      }
+    } else {
+      // Consolidated batch digest: Consumes only 1 subrequest per admin
+      for (const adminId of this.adminChatIds) {
+        let text =
+          `🚨 <b>Auto Guard: Batch Threats Mitigated!</b>\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `<b>Total Blocked:</b> <b>${newlyBlocked.length} IPs</b>\n\n`;
+
+        for (const d of newlyBlocked.slice(0, 25)) {
+          const zoneTag = d.zoneName ? `[${this.escapeHtml(d.zoneName)}] ` : "";
+          const typeTag =
+            d.threatType === "SCANNER_TRAP"
+              ? `Canary Trap (${this.escapeHtml(d.probePath || "sensitive path")})`
+              : d.threatType === "SCANNER_404"
+              ? `404 Scanner (${d.requestCount} errors)`
+              : `Flood (${d.requestCount} reqs)`;
+
+          text += `• <code>${d.ip}</code> ${zoneTag}— <i>${typeTag}</i> (${this.escapeHtml(d.country || "??")})\n`;
         }
 
-        const text =
-          `${title}\n` +
-          `━━━━━━━━━━━━━━━━━━━━\n` +
-          zoneLine +
-          `🌐 <b>IP:</b> <code>${d.ip}</code>\n` +
-          `🏳️ <b>Country:</b> ${d.country || "Unknown"}\n` +
-          metricLine +
-          `🏷️ <b>Rank:</b> #${d.rank}\n` +
-          `📝 <b>Reason:</b> <i>${d.reason}</i>\n` +
+        if (newlyBlocked.length > 25) {
+          text += `\n<i>...and ${newlyBlocked.length - 25} additional threats mitigated</i>\n`;
+        }
+
+        text +=
           `━━━━━━━━━━━━━━━━━━━━\n` +
           `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
 
-        const keyboard: TelegramInlineKeyboardMarkup = {
-          inline_keyboard: [[{ text: `🔓 Unban (${d.ip})`, callback_data: `unban:${d.ip}` }]]
-        };
-
-        await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+        try {
+          await this.client.sendMessage(adminId, text);
+        } catch {
+          // Error isolated to prevent breaking the worker execution
+        }
       }
     }
   }
@@ -1399,8 +1455,8 @@ export class TelegramBotHandler {
             `━━━━━━━━━━━━━━━━━━━━\n` +
             `🌐 <b>IP:</b> <code>${u.ip}</code>\n` +
             `📋 <b>Reason:</b> ${reasonLabel}\n` +
-            (u.comment ? `💬 <b>Original Ban:</b> <i>${u.comment}</i>\n` : "") +
-            (u.createdOn ? `📅 <b>Banned At:</b> <i>${u.createdOn}</i>\n` : "") +
+            (u.comment ? `💬 <b>Original Ban:</b> <i>${this.escapeHtml(u.comment)}</i>\n` : "") +
+            (u.createdOn ? `📅 <b>Banned At:</b> <i>${this.escapeHtml(u.createdOn)}</i>\n` : "") +
             `━━━━━━━━━━━━━━━━━━━━\n` +
             `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
 
@@ -1408,7 +1464,11 @@ export class TelegramBotHandler {
             inline_keyboard: [[{ text: `🚫 Re-Ban (${u.ip})`, callback_data: `reban:${u.ip}` }]]
           };
 
-          await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+          try {
+            await this.client.sendMessage(adminId, text, { reply_markup: keyboard });
+          } catch {
+            // Error isolated
+          }
         }
       }
     } else {
@@ -1431,7 +1491,11 @@ export class TelegramBotHandler {
           `━━━━━━━━━━━━━━━━━━━━\n` +
           `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
 
-        await this.client.sendMessage(adminId, text);
+        try {
+          await this.client.sendMessage(adminId, text);
+        } catch {
+          // Error isolated
+        }
       }
     }
   }

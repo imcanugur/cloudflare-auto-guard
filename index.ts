@@ -397,7 +397,7 @@ export default {
 
       // Push real-time alert to Telegram admins for blocked threats & unbanned IPs
       ctx.waitUntil(
-        Promise.all([
+        Promise.allSettled([
           telegramBot.notifyBannedIps(decisions),
           telegramBot.notifyUnbannedIps(unbanned)
         ])
@@ -477,7 +477,7 @@ export default {
       decisionEngine
         .evaluateZones(activePolicy, zones)
         .then(({ decisions, unbanned }) => {
-          return Promise.all([
+          return Promise.allSettled([
             telegramBot.notifyBannedIps(decisions),
             telegramBot.notifyUnbannedIps(unbanned)
           ]);

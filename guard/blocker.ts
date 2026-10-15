@@ -117,7 +117,14 @@ export class Blocker {
         this.blockedCache.add(item.ip);
 
         // Check if item has exceeded TTL
-        const createdTime = item.created_on ? new Date(item.created_on).getTime() : 0;
+        let createdTime = item.created_on ? new Date(item.created_on).getTime() : 0;
+        // Fallback: Parse date from comment if created_on is missing or invalid
+        if ((!createdTime || isNaN(createdTime)) && item.comment) {
+          const match = item.comment.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)\s*UTC/i);
+          if (match && match[1]) {
+            createdTime = new Date(match[1].replace(" ", "T") + "Z").getTime();
+          }
+        }
         const isExpired = createdTime > 0 && now - createdTime > ttlSeconds * 1000;
 
         if (isExpired) {
@@ -135,11 +142,15 @@ export class Blocker {
 
       // 10k Limit Safeguard: If remaining active items exceed maxListSize, prune oldest first
       if (activeItems.length > maxListSize) {
-        activeItems.sort((a, b) => {
-          const tA = a.created_on ? new Date(a.created_on).getTime() : 0;
-          const tB = b.created_on ? new Date(b.created_on).getTime() : 0;
-          return tA - tB;
-        });
+        const getItemTime = (i: typeof items[0]) => {
+          let t = i.created_on ? new Date(i.created_on).getTime() : 0;
+          if ((!t || isNaN(t)) && i.comment) {
+            const m = i.comment.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)\s*UTC/i);
+            if (m && m[1]) t = new Date(m[1].replace(" ", "T") + "Z").getTime();
+          }
+          return t || 0;
+        };
+        activeItems.sort((a, b) => getItemTime(a) - getItemTime(b));
 
         const overflowCount = activeItems.length - maxListSize;
         const overflowItems = activeItems.slice(0, overflowCount);
@@ -204,9 +215,18 @@ export class Blocker {
       }));
     }
 
+    // Strictly deduplicate by IP to eliminate duplicate item values in the batch payload
+    const uniqueDecisionsMap = new Map<string, GuardDecision>();
+    for (const d of unblockedDecisions) {
+      if (!uniqueDecisionsMap.has(d.ip)) {
+        uniqueDecisionsMap.set(d.ip, d);
+      }
+    }
+    const dedupedDecisions = Array.from(uniqueDecisionsMap.values());
+
     // 1. Dry-run mode
     if (this.dryRun) {
-      for (const d of unblockedDecisions) {
+      for (const d of dedupedDecisions) {
         const comment = formatComment(d);
         logger.info("WOULD_BLOCK", {
           ip: d.ip,
@@ -227,14 +247,14 @@ export class Blocker {
 
     if (!this.listsService || !this.listId) {
       logger.warn("BLOCK_SKIPPED_NO_CLOUDFLARE_CONFIG", {
-        count: unblockedDecisions.length,
+        count: dedupedDecisions.length,
         message: "Cloudflare Lists API credentials or listId not configured"
       });
       return decisions;
     }
 
-    // 2. Prepare bulk payload (up to 1,000 items in ONE HTTP request)
-    const payload = unblockedDecisions.map((d) => ({
+    // 2. Prepare bulk payload (strictly unique IPs)
+    const payload = dedupedDecisions.map((d) => ({
       ip: d.ip,
       comment: formatComment(d)
     }));
@@ -248,7 +268,7 @@ export class Blocker {
         }
       }
 
-      for (const d of unblockedDecisions) {
+      for (const d of dedupedDecisions) {
         this.markBlockedLocal(d.ip);
         logger.info("GUARD_DECISION", {
           ip: d.ip,
@@ -266,25 +286,56 @@ export class Blocker {
 
       return decisions;
     } catch (err) {
-      const msg = (err as Error).message.toLowerCase();
+      const msg = (err as Error).message || "";
+      const lowerMsg = msg.toLowerCase();
 
-      // Gracefully handle duplicate items error from Cloudflare
+      // Gracefully handle duplicate items error from Cloudflare:
+      // e.g. "Cloudflare API request failed with status 400: invalid value for ip at position 52: filters.api.duplicate_item_value..."
       if (
-        msg.includes("duplicate") ||
-        msg.includes("already exists") ||
-        msg.includes("10002") ||
-        msg.includes("10008")
+        lowerMsg.includes("duplicate") ||
+        lowerMsg.includes("already exists") ||
+        lowerMsg.includes("10002") ||
+        lowerMsg.includes("10008")
       ) {
-        for (const d of unblockedDecisions) {
+        const duplicatePositions = new Set<number>(
+          [...msg.matchAll(/position\s+(\d+)/gi)].map((m) => parseInt(m[1], 10))
+        );
+
+        if (duplicatePositions.size > 0 && typeof this.listsService.addIpsBatch === "function") {
+          for (const pos of duplicatePositions) {
+            if (payload[pos]) {
+              this.markBlockedLocal(payload[pos].ip);
+            }
+          }
+
+          const cleanPayload = payload.filter((_, idx) => !duplicatePositions.has(idx));
+          if (cleanPayload.length > 0) {
+            try {
+              await this.listsService.addIpsBatch(this.listId, cleanPayload);
+              logger.info("IP_BATCH_RETRY_WITHOUT_DUPLICATES_SUCCESS", {
+                originalCount: payload.length,
+                duplicatesRemoved: duplicatePositions.size,
+                addedCount: cleanPayload.length
+              });
+            } catch (retryErr) {
+              logger.warn("IP_BATCH_RETRY_FAILED", {
+                message: (retryErr as Error).message
+              });
+            }
+          }
+        }
+
+        for (const d of dedupedDecisions) {
           this.markBlockedLocal(d.ip);
         }
-        logger.info("IP_BATCH_CONTAINED_EXISTING_ITEMS", { count: unblockedDecisions.length });
+
+        logger.info("IP_BATCH_CONTAINED_EXISTING_ITEMS", { count: dedupedDecisions.length });
         return decisions;
       }
 
       metrics.increment("cloudflare_api_errors");
       logger.error("BLOCK_BATCH_EXECUTION_FAILED", {
-        count: unblockedDecisions.length,
+        count: dedupedDecisions.length,
         message: (err as Error).message
       });
 
