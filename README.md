@@ -69,6 +69,7 @@ Policies can be updated at runtime via `POST /__guard/policy` and are persisted 
 ```json
 {
   "enabled": true,
+  "timezone": "Europe/Istanbul",
   "windowSeconds": 3600,
   "topN": 100,
   "default": {
@@ -240,6 +241,7 @@ Manage, monitor, and unban IPs directly from your phone or desktop via a secure,
 | `/traps` | Lists active canary/honeypot trap paths | `/traps` |
 | `/add_trap <path>` | Adds an endpoint to canary traps | `/add_trap /.env.local` |
 | `/remove_trap <path>` | Removes an endpoint from canary traps | `/remove_trap /.env` |
+| `/set_timezone <tz>` | Updates alert & report display timezone | `/set_timezone Europe/Istanbul` |
 | `/set_policy <json>` | Directly sets the full JSON policy | `/set_policy {...}` |
 | `/admins` | Lists all authorized administrator IDs and groups | `/admins` |
 | `/help` | Interactive control panel with instant action buttons | `/help` |

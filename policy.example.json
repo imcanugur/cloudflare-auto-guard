@@ -1,5 +1,6 @@
 {
   "enabled": true,
+  "timezone": "Europe/Istanbul",
   "windowSeconds": 3600,
   "topN": 100,
   "default": {

@@ -54,6 +54,7 @@ export const ScannerPolicySchema = z.object({
 
 export const GuardPolicySchema = z.object({
   enabled: z.boolean().default(true),
+  timezone: z.string().optional().default("UTC"),
   windowSeconds: z.number().int().positive().optional().default(300),
   topN: z.number().int().positive().optional().default(100),
   default: DefaultRuleSchema,

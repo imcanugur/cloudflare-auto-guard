@@ -35,6 +35,7 @@ export interface ScannerPolicyConfig {
 
 export interface GuardPolicy {
   enabled: boolean;
+  timezone?: string;
   windowSeconds?: number;
   topN?: number;
   default: DefaultPolicyRule;

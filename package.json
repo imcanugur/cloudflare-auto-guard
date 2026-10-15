@@ -1,6 +1,6 @@
 {
   "name": "cloudflare-auto-guard",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Production-grade, zero-external-backend country-based auto-guard worker using Cloudflare Workers, Durable Objects, KV, and Lists API",
   "main": "index.ts",
   "type": "module",

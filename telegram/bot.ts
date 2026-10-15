@@ -71,6 +71,36 @@ export class TelegramBotHandler {
   }
 
   /**
+   * Formats a date using the configured policy timezone with fallback to UTC
+   */
+  private formatTimestamp(date: Date = new Date(), timeZone = "UTC"): string {
+    const tz = (timeZone || "UTC").trim();
+    if (tz.toUpperCase() === "UTC") {
+      return `${date.toISOString().replace("T", " ").slice(0, 19)} UTC`;
+    }
+
+    try {
+      const formatter = new Intl.DateTimeFormat("en-GB", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      const parts = formatter.formatToParts(date);
+      const m = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+      const tzLabel = tz === "Europe/Istanbul" ? "TRT" : tz;
+      const utcTime = date.toISOString().replace("T", " ").slice(11, 19);
+      return `${m.year}-${m.month}-${m.day} ${m.hour}:${m.minute}:${m.second} ${tzLabel} (${utcTime} UTC)`;
+    } catch {
+      return `${date.toISOString().replace("T", " ").slice(0, 19)} UTC`;
+    }
+  }
+
+  /**
    * Safely validates and persists a policy update
    */
   private async savePolicySafely(policy: GuardPolicy): Promise<{ success: boolean; error?: string }> {
@@ -195,6 +225,10 @@ export class TelegramBotHandler {
       case "/set_policy":
         await this.executeSetPolicyJson(chatId, text.replace(/^\/set_policy\s*/i, ""));
         break;
+      case "/set_timezone":
+      case "/timezone":
+        await this.executeSetTimezone(chatId, args[0]);
+        break;
       default:
         await this.client.sendMessage(
           chatId,
@@ -235,6 +269,7 @@ export class TelegramBotHandler {
       `• /traps — View active honeypot canary trap paths\n` +
       `• /add_trap &lt;path&gt; — Add sensitive endpoint to traps (e.g. <code>/add_trap /.env</code>)\n` +
       `• /remove_trap &lt;path&gt; — Remove endpoint from traps\n` +
+      `• /set_timezone &lt;tz&gt; — Configure display timezone (e.g. <code>/set_timezone Europe/Istanbul</code>)\n` +
       `• /set_policy &lt;JSON&gt; — Upload raw policy JSON directly\n\n` +
       `<i>Use the quick action buttons below:</i>`;
 
@@ -295,8 +330,9 @@ export class TelegramBotHandler {
       `• Allowlist Size: <b>${policy.allowlist?.length || 0} CIDRs</b>\n` +
       `• ScannerGuard (404 Hunter): ${policy.scanner?.enabled !== false ? `<b>Active</b> (Limit: ${policy.scanner?.max404Threshold ?? 25} err)` : "<i>Disabled</i>"}\n` +
       `• Canary Honeypot: ${policy.scanner?.enabled !== false && (policy.scanner?.trapPaths?.length || 0) > 0 ? `<b>Active</b> (${policy.scanner?.trapPaths?.length} traps)` : "<i>Disabled</i>"}\n` +
+      `• Timezone: <code>${policy.timezone || "UTC"}</code>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `⏱️ <i>Inspected: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+      `⏱️ <i>Inspected: ${this.formatTimestamp(new Date(), policy.timezone)}</i>`;
 
     const keyboard: TelegramInlineKeyboardMarkup = {
       inline_keyboard: [
@@ -464,6 +500,7 @@ export class TelegramBotHandler {
       `🏳️ <b>Country Overrides:</b> <b>${countryCount} rules</b>\n` +
       `🛡️ <b>Allowlist Size:</b> <b>${allowCount} CIDRs</b>\n` +
       `🧹 <b>Auto-Unban (TTL):</b> <b>${ttlHours} Hours</b>\n` +
+      `🌍 <b>Timezone:</b> <code>${policy.timezone || "UTC"}</code>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `<b>JSON Schema:</b>\n` +
       `<pre><code class="language-json">${formatted}</code></pre>\n\n` +
@@ -976,6 +1013,51 @@ export class TelegramBotHandler {
   }
 
   /**
+   * /set_timezone command: Configures the display timezone for alerts and timestamps
+   */
+  private async executeSetTimezone(chatId: number, rawTz?: string): Promise<void> {
+    if (!rawTz || !rawTz.trim()) {
+      const policy = await this.getPolicy();
+      const current = policy.timezone || "UTC";
+      await this.client.sendMessage(
+        chatId,
+        `🌍 <b>Current Timezone:</b> <code>${this.escapeHtml(current)}</code>\n\n` +
+          `⚠️ Usage: <code>/set_timezone &lt;timezone&gt;</code>\n` +
+          `Examples:\n` +
+          `• <code>/set_timezone Europe/Istanbul</code> (TRT / UTC+3)\n` +
+          `• <code>/set_timezone UTC</code>\n` +
+          `• <code>/set_timezone America/New_York</code>`
+      );
+      return;
+    }
+
+    const tz = rawTz.trim();
+    try {
+      new Intl.DateTimeFormat("en-GB", { timeZone: tz }).format(new Date());
+    } catch {
+      await this.client.sendMessage(
+        chatId,
+        `❌ Invalid timezone <code>${this.escapeHtml(tz)}</code>. Please provide a valid IANA timezone name (e.g. <code>Europe/Istanbul</code>, <code>UTC</code>, <code>America/New_York</code>).`
+      );
+      return;
+    }
+
+    const policy = await this.getPolicy();
+    policy.timezone = tz;
+    const res = await this.savePolicySafely(policy);
+    if (!res.success) {
+      await this.client.sendMessage(chatId, `❌ Failed to update timezone: ${res.error}`);
+      return;
+    }
+
+    const sample = this.formatTimestamp(new Date(), tz);
+    await this.client.sendMessage(
+      chatId,
+      `✅ <b>Timezone Updated!</b>\nNew Timezone: <code>${this.escapeHtml(tz)}</code>\nCurrent Local Time: <b>${sample}</b>\nAll subsequent Telegram alerts will display in this timezone.`
+    );
+  }
+
+  /**
    * Helper to broadcast an informational message to all admins except optionally the initiator
    */
   private async broadcastToOtherAdmins(text: string, excludeChatId?: number | string): Promise<void> {
@@ -1343,6 +1425,9 @@ export class TelegramBotHandler {
     const newlyBlocked = decisions.filter((d) => d.action === "BLOCK");
     if (newlyBlocked.length === 0 || this.adminChatIds.size === 0) return;
 
+    const policy = await this.getPolicy();
+    const timeStr = this.formatTimestamp(new Date(), policy.timezone);
+
     // To prevent exceeding Cloudflare subrequest limits (50 subrequests per invocation),
     // send individual cards only if <= 3 items are blocked.
     // When > 3 items are blocked, consolidate into a single executive digest per admin.
@@ -1386,7 +1471,7 @@ export class TelegramBotHandler {
             `🏷️ <b>Rank:</b> #${d.rank}\n` +
             `📝 <b>Reason:</b> <i>${this.escapeHtml(d.reason)}</i>\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+            `⏰ <i>${timeStr}</i>`;
 
           const keyboard: TelegramInlineKeyboardMarkup = {
             inline_keyboard: [[{ text: `🔓 Unban (${d.ip})`, callback_data: `unban:${d.ip}` }]]
@@ -1425,7 +1510,7 @@ export class TelegramBotHandler {
 
         text +=
           `━━━━━━━━━━━━━━━━━━━━\n` +
-          `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+          `⏰ <i>${timeStr}</i>`;
 
         try {
           await this.client.sendMessage(adminId, text);
@@ -1443,6 +1528,9 @@ export class TelegramBotHandler {
   public async notifyUnbannedIps(unbanned: PrunedUnbanItem[]): Promise<void> {
     if (!unbanned || unbanned.length === 0 || this.adminChatIds.size === 0) return;
 
+    const policy = await this.getPolicy();
+    const timeStr = this.formatTimestamp(new Date(), policy.timezone);
+
     if (unbanned.length <= 5) {
       for (const adminId of this.adminChatIds) {
         for (const u of unbanned) {
@@ -1459,7 +1547,7 @@ export class TelegramBotHandler {
             (u.comment ? `💬 <b>Original Ban:</b> <i>${this.escapeHtml(u.comment)}</i>\n` : "") +
             (u.createdOn ? `📅 <b>Banned At:</b> <i>${this.escapeHtml(u.createdOn)}</i>\n` : "") +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+            `⏰ <i>${timeStr}</i>`;
 
           const keyboard: TelegramInlineKeyboardMarkup = {
             inline_keyboard: [[{ text: `🚫 Re-Ban (${u.ip})`, callback_data: `reban:${u.ip}` }]]
@@ -1490,7 +1578,7 @@ export class TelegramBotHandler {
 
         text +=
           `━━━━━━━━━━━━━━━━━━━━\n` +
-          `⏰ <i>${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC</i>`;
+          `⏰ <i>${timeStr}</i>`;
 
         try {
           await this.client.sendMessage(adminId, text);
