@@ -89,6 +89,7 @@ export class DecisionEngine {
 
     const allDecisions: GuardDecision[] = [];
     const toBlockGlobal: GuardDecision[] = [];
+    const toBlockIpSet = new Set<string>();
     const zoneSummaries: ZoneEvaluationSummary[] = [];
 
     // 2. Query Analytics and evaluate candidates across all configured zones
@@ -101,7 +102,9 @@ export class DecisionEngine {
         let ignoredCount = 0;
 
         for (const candidate of candidates) {
-          const isAlreadyBlocked = this.blocker.isAlreadyBlocked(candidate.ip);
+          const isAlreadyBlocked =
+            this.blocker.isAlreadyBlocked(candidate.ip) ||
+            toBlockIpSet.has(candidate.ip);
 
           const decision = CandidateEvaluator.evaluate({
             ip: candidate.ip,
@@ -117,7 +120,10 @@ export class DecisionEngine {
           });
 
           if (decision.action === "BLOCK") {
-            toBlockGlobal.push(decision);
+            if (!toBlockIpSet.has(candidate.ip)) {
+              toBlockGlobal.push(decision);
+              toBlockIpSet.add(candidate.ip);
+            }
             blockedCount++;
           } else {
             metrics.increment("ignored_ips");
@@ -145,7 +151,7 @@ export class DecisionEngine {
           for (const candidate of scanners404) {
             const isAlreadyBlocked =
               this.blocker.isAlreadyBlocked(candidate.ip) ||
-              toBlockGlobal.some((b) => b.ip === candidate.ip);
+              toBlockIpSet.has(candidate.ip);
 
             const decision = CandidateEvaluator.evaluateScanner404({
               ip: candidate.ip,
@@ -161,7 +167,10 @@ export class DecisionEngine {
             });
 
             if (decision.action === "BLOCK") {
-              toBlockGlobal.push(decision);
+              if (!toBlockIpSet.has(candidate.ip)) {
+                toBlockGlobal.push(decision);
+                toBlockIpSet.add(candidate.ip);
+              }
               scannersBlockedForZone++;
               blockedCount++;
             } else {
@@ -178,7 +187,7 @@ export class DecisionEngine {
             for (const candidate of trapProbes) {
               const isAlreadyBlocked =
                 this.blocker.isAlreadyBlocked(candidate.ip) ||
-                toBlockGlobal.some((b) => b.ip === candidate.ip);
+                toBlockIpSet.has(candidate.ip);
 
               const decision = CandidateEvaluator.evaluateScannerTrap(
                 {
@@ -197,7 +206,10 @@ export class DecisionEngine {
               );
 
               if (decision.action === "BLOCK") {
-                toBlockGlobal.push(decision);
+                if (!toBlockIpSet.has(candidate.ip)) {
+                  toBlockGlobal.push(decision);
+                  toBlockIpSet.add(candidate.ip);
+                }
                 scannersBlockedForZone++;
                 blockedCount++;
               } else {
