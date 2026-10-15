@@ -32,7 +32,7 @@ function formatComment(decision: GuardDecision): string {
 
   if (threatType === "SCANNER_TRAP") {
     const probe = decision.probePath ? ` | Probe: ${decision.probePath.slice(0, 32)}` : "";
-    return `Auto Guard: ${zoneTag}CANARY TRAP | ${country}${asnStr}${probe} | Rank: #${rank} | ${dateStr}`;
+    return `Auto Guard: ${zoneTag}CANARY TRAP | ${country}${asnStr}${probe} | Hits: ${requestCount} | Rank: #${rank} | ${dateStr}`;
   }
 
   return `Auto Guard: ${zoneTag}${country}${asnStr} | Req: ${requestCount} (Limit: ${threshold}/${windowStr}) | Rank: #${rank} | ${dateStr}`;

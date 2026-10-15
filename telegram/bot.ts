@@ -424,8 +424,8 @@ export class TelegramBotHandler {
         for (const b of blocked) {
           const zoneTag = b.zoneName ? `[${b.zoneName}] ` : "";
           if (b.threatType === "SCANNER_TRAP") {
-            const probe = b.probePath ? ` [${b.probePath}]` : "";
-            report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🪤 <b>Canary Trap${probe}</b>\n`;
+            const probe = b.probePath ? ` [${this.escapeHtml(b.probePath)}]` : "";
+            report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🪤 <b>Canary Trap${probe}</b> (${b.requestCount} probe${b.requestCount > 1 ? "s" : ""})\n`;
           } else if (b.threatType === "SCANNER_404") {
             report += `• <code>${b.ip}</code> ${zoneTag}(${b.country || "??"}) — 🌪️ <b>${b.requestCount} x 404s</b> (Limit: ${b.threshold})\n`;
           } else {
@@ -1368,6 +1368,7 @@ export class TelegramBotHandler {
             const probeText = d.probePath ? `<code>${this.escapeHtml(d.probePath)}</code>` : "<i>Sensitive Trap Path</i>";
             metricLine =
               `🪤 <b>Trapped Probe:</b> ${probeText}\n` +
+              `📊 <b>Trap Hits:</b> <b>${d.requestCount} probe${d.requestCount > 1 ? "s" : ""}</b> (Zero Tolerance)\n` +
               `🎯 <b>Classification:</b> <i>Sensitive File Reconnaissance (Canary Trap)</i>\n`;
           } else if (isScanner) {
             metricLine =
@@ -1410,7 +1411,7 @@ export class TelegramBotHandler {
           const zoneTag = d.zoneName ? `[${this.escapeHtml(d.zoneName)}] ` : "";
           const typeTag =
             d.threatType === "SCANNER_TRAP"
-              ? `Canary Trap (${this.escapeHtml(d.probePath || "sensitive path")})`
+              ? `Canary Trap (${this.escapeHtml(d.probePath || "sensitive path")}, ${d.requestCount} probe${d.requestCount > 1 ? "s" : ""})`
               : d.threatType === "SCANNER_404"
               ? `404 Scanner (${d.requestCount} errors)`
               : `Flood (${d.requestCount} reqs)`;
